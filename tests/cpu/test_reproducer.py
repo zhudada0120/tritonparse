@@ -13,10 +13,47 @@ from tests.test_utils import (
     setup_temp_reproduce_dir,
 )
 from tritonparse.reproducer.cli import _add_reproducer_args
+from tritonparse.reproducer.ingestion.ndjson import get_kernel_info
+from tritonparse.reproducer.utils import _normalize_device, determine_output_paths
 
 
 class TestReproducer(unittest.TestCase):
     """Tests for reproducer generation."""
+
+    def test_get_kernel_info_extracts_function_name_from_source(self):
+        comp_event = {
+            "payload": {
+                "metadata": {
+                    "name": "triton_add aiv",
+                },
+                "python_source": {
+                    "file_path": "/tmp/test_tritonparse.py",
+                    "code": "@triton.jit\ndef triton_add(x, y):\n    return x\n",
+                },
+            },
+            "stack": [],
+        }
+
+        kernel_info = get_kernel_info(comp_event)
+
+        self.assertEqual(kernel_info.function_name, "triton_add")
+
+    def test_determine_output_paths_sanitizes_kernel_directory_name(self):
+        temp_dir, out_dir = setup_temp_reproduce_dir()
+
+        try:
+            out_py_path, temp_json_path = determine_output_paths(
+                out_dir,
+                "triton_add aiv",
+                "example",
+                7,
+            )
+
+            self.assertEqual(out_py_path.parent.name, "triton_add_aiv")
+            self.assertEqual(temp_json_path.parent.name, "triton_add_aiv")
+            self.assertTrue(out_py_path.parent.exists())
+        finally:
+            cleanup_temp_dir(temp_dir)
 
     def test_reproduce_mutual_exclusivity(self):
         """Test that --line and --kernel/--launch-id are mutually exclusive."""
@@ -123,6 +160,28 @@ class TestReproducer(unittest.TestCase):
 
         finally:
             cleanup_temp_dir(temp_dir)
+
+
+class TestNormalizeDevice(unittest.TestCase):
+    """Tests for preserving explicit device selection in reproducers."""
+
+    def test_preserves_cuda_without_index(self):
+        self.assertEqual(_normalize_device("cuda"), "cuda")
+
+    def test_preserves_cuda_with_index(self):
+        self.assertEqual(_normalize_device("cuda:2"), "cuda:2")
+
+    def test_preserves_npu_without_index(self):
+        self.assertEqual(_normalize_device("npu"), "npu")
+
+    def test_preserves_npu_with_index(self):
+        self.assertEqual(_normalize_device("npu:3"), "npu:3")
+
+    def test_strips_surrounding_whitespace(self):
+        self.assertEqual(_normalize_device(" npu:1 "), "npu:1")
+
+    def test_non_string_passthrough(self):
+        self.assertIsNone(_normalize_device(None))
 
 
 if __name__ == "__main__":

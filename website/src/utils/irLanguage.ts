@@ -12,6 +12,10 @@ export const getDisplayLanguage = (irType: string): string => {
     return "TTGIR (TritonGPU MLIR)";
   } else if (irType.toLowerCase().endsWith("ttir")) {
     return "TTIR (Triton MLIR)";
+  } else if (irType.toLowerCase().endsWith("ttadapter")) {
+    return "TTAdapter IR";
+  } else if (irType.toLowerCase().endsWith("bcmlir")) {
+    return "BCMLIR";
   } else if (irType.toLowerCase().endsWith("llir")) {
     return "LLIR (LLVM IR)";
   } else if (irType.toLowerCase().endsWith("ptx")) {

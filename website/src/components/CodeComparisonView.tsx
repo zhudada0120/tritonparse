@@ -248,6 +248,8 @@ const CodeComparisonView: React.FC<CodeComparisonViewProps> = ({
             const irTypesToCheck = [
                 { type: "ttgir", property: "ttgir_lines" },
                 { type: "ttir", property: "ttir_lines" },
+                { type: "ttadapter", property: "ttadapter_lines" },
+                { type: "bcmlir", property: "bcmlir_lines" },
                 { type: "ptx", property: "ptx_lines" },
                 { type: "llir", property: "llir_lines" },
                 { type: "amdgcn", property: "amdgcn_lines" },

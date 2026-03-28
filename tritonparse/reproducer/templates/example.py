@@ -33,7 +33,7 @@ def launch_kernel():
 
     # {{KERNEL_INVOCATION_PLACEHOLDER}}
 
-    torch.cuda.synchronize()
+    # {{DEVICE_SYNCHRONIZE_PLACEHOLDER}}
     print("Kernel execution finished.")
 
 

@@ -171,7 +171,12 @@ export const mapLanguageToHighlighter = (language: string): string => {
   const lowerCaseLanguage = language.toLowerCase();
 
   // Handle language types with endsWith for better accuracy
-  if (lowerCaseLanguage.endsWith("ttgir") || lowerCaseLanguage.endsWith("ttir")) {
+  if (
+    lowerCaseLanguage.endsWith("ttgir") ||
+    lowerCaseLanguage.endsWith("ttir") ||
+    lowerCaseLanguage.endsWith("ttadapter") ||
+    lowerCaseLanguage.endsWith("bcmlir")
+  ) {
     return 'mlir';
   } else if (lowerCaseLanguage.endsWith("llir")) {
     return 'llvm';

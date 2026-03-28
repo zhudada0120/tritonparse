@@ -85,6 +85,8 @@ def _make_context_bundle(
     function_name="test_kernel",
     source_code="@triton.jit\ndef test_kernel(): pass",
     file_path="/tmp/test.py",
+    backend="cuda",
+    device="cuda:0",
 ):
     """Helper to build a minimal ContextBundle for testing."""
     kernel_info = KernelInfo(
@@ -97,6 +99,7 @@ def _make_context_bundle(
         "num_warps": 4,
         "num_stages": 2,
         "global_scratch_size": global_scratch_size,
+        "backend": backend,
     }
     launch_block = {"grid": [1, 1, 1], "kwargs": {}}
     return ContextBundle(
@@ -105,7 +108,14 @@ def _make_context_bundle(
         launch=launch_block,
         args={},
         tensor_args={},
-        raw_launch_event={},
+        raw_launch_event={
+            "extracted_args": {
+                "arg0": {
+                    "type": "tensor",
+                    "device": device,
+                }
+            }
+        },
         raw_comp_event={},
     )
 
@@ -155,6 +165,40 @@ class TestAllocatorInjection(unittest.TestCase):
     def test_allocator_comment_mentions_customization(self):
         result = self._run_replace("512")
         self.assertIn("replace this with the allocator", result)
+
+    def test_allocator_uses_npu_device_for_ascend_backend(self):
+        replacer = DefaultPlaceholderReplacer()
+        ctx = _make_context_bundle(global_scratch_size="512", backend="npu", device="npu:0")
+        template = "# {{LAUNCH_KERNEL_BODY_PLACEHOLDER}}"
+        result = replacer._replace_launch_kernel_body(
+            template,
+            ctx,
+            embed_context=False,
+            temp_json_path=MagicMock(name="ctx.json"),
+        )
+        self.assertIn("device='npu'", result)
+
+
+class TestDeviceSynchronizeReplacement(unittest.TestCase):
+    """Tests for backend-specific synchronize code generation."""
+
+    def test_generates_cuda_synchronize_by_default(self):
+        replacer = DefaultPlaceholderReplacer()
+        ctx = _make_context_bundle()
+        result = replacer._replace_device_synchronize(
+            "# {{DEVICE_SYNCHRONIZE_PLACEHOLDER}}",
+            ctx,
+        )
+        self.assertEqual(result, "torch.cuda.synchronize()")
+
+    def test_generates_npu_synchronize_for_ascend_backend(self):
+        replacer = DefaultPlaceholderReplacer()
+        ctx = _make_context_bundle(backend="npu", device="npu:0")
+        result = replacer._replace_device_synchronize(
+            "# {{DEVICE_SYNCHRONIZE_PLACEHOLDER}}",
+            ctx,
+        )
+        self.assertEqual(result, "torch.npu.synchronize()")
 
 
 class TestBuildContextBundleScratchSize(unittest.TestCase):

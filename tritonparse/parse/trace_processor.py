@@ -257,18 +257,32 @@ def parse_single_trace_content(trace_content: str) -> str:
         # Find the IR file keys
         ttir_key = next((k for k in file_content if k.endswith(".ttir")), None)
         ttgir_key = next((k for k in file_content if k.endswith(".ttgir")), None)
+        ttadapter_key = next(
+            (k for k in file_content if k.endswith(".ttadapter")), None
+        )
+        bcmlir_key = next((k for k in file_content if k.endswith(".bcmlir")), None)
         ptx_key = next((k for k in file_content if k.endswith(".ptx")), None)
         amdgcn_key = next((k for k in file_content if k.endswith(".amdgcn")), None)
         sass_key = next((k for k in file_content if k.endswith(".sass")), None)
         # Skip if no IR files found
-        if not (ttir_key or ttgir_key or ptx_key or amdgcn_key or sass_key):
+        if not (
+            ttir_key
+            or ttgir_key
+            or ttadapter_key
+            or bcmlir_key
+            or ptx_key
+            or amdgcn_key
+            or sass_key
+        ):
             logger.warning("No IR files found in the payload.")
             # Still return with proper NDJSON format (with newline)
             return json.dumps(entry, separators=(",", ":")) + "\n"
 
-        # generate ttir->source, ttgir->source, ptx->source, sass->source
+        # Generate source mappings for all textual IR stages that carry loc info.
         ttir_map = process_ir(ttir_key, file_content, file_path)
         ttgir_map = process_ir(ttgir_key, file_content, file_path)
+        ttadapter_map = process_ir(ttadapter_key, file_content, file_path)
+        bcmlir_map = process_ir(bcmlir_key, file_content, file_path)
         ptx_map = process_ir(ptx_key, file_content, file_path, [ttir_map, ttgir_map])
         amdgcn_map = process_ir(
             amdgcn_key, file_content, file_path, [ttir_map, ttgir_map]
@@ -279,6 +293,8 @@ def parse_single_trace_content(trace_content: str) -> str:
         ir_maps = {
             "ttir": ttir_map,
             "ttgir": ttgir_map,
+            "ttadapter": ttadapter_map,
+            "bcmlir": bcmlir_map,
             "ptx": ptx_map,
             "amdgcn": amdgcn_map,
             "sass": sass_map,
@@ -309,6 +325,8 @@ def parse_single_trace_content(trace_content: str) -> str:
             ir_keys_and_maps = [
                 (ttir_key, ttir_map),
                 (ttgir_key, ttgir_map),
+                (ttadapter_key, ttadapter_map),
+                (bcmlir_key, bcmlir_map),
                 (ptx_key, ptx_map),
                 (amdgcn_key, amdgcn_map),
                 (sass_key, sass_map),
@@ -324,6 +342,8 @@ def parse_single_trace_content(trace_content: str) -> str:
         payload["source_mappings"] = {
             "ttir": ttir_map,
             "ttgir": ttgir_map,
+            **({"ttadapter": ttadapter_map} if ttadapter_map else {}),
+            **({"bcmlir": bcmlir_map} if bcmlir_map else {}),
             **({"ptx": ptx_map} if ptx_map else {}),
             **({"amdgcn": amdgcn_map} if amdgcn_map else {}),
             **({"sass": sass_map} if sass_map else {}),

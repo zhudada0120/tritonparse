@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 """Tests for IR parsing functionality."""
 
+import json
 import unittest
 
 from tests.test_utils import get_sass_test_file
@@ -10,7 +11,10 @@ from tritonparse.parse.ir_parser import (
     extract_sass_pc_mappings,
 )
 from tritonparse.parse.mapper import create_bidirectional_mapping, create_ir_mapping
-from tritonparse.parse.trace_processor import generate_source_mappings
+from tritonparse.parse.trace_processor import (
+    generate_source_mappings,
+    parse_single_trace_content,
+)
 
 
 class TestIRParser(unittest.TestCase):
@@ -287,6 +291,64 @@ module {
         self.assertEqual(first_mapping["column"], 0)
 
         print("✓ SASS integration tests passed")
+
+        def test_ttadapter_and_bcmlir_cross_ir_mappings(self):
+                """Test that ttadapter and bcmlir participate in the same cross-IR mapping flow."""
+                ttir_content = """
+module {
+    %0 = arith.constant 0 : i32 loc(#loc2)
+}
+#loc2 = loc("/tmp/test.py":20:28)
+"""
+                ttadapter_content = """
+module {
+    %0 = builtin.unrealized_conversion_cast loc(#loc2)
+}
+#loc2 = loc("/tmp/test.py":20:28)
+"""
+                bcmlir_content = """
+module {
+    %0 = func.call @kernel() : () -> () loc(#loc2)
+}
+#loc2 = loc("/tmp/test.py":20:28)
+"""
+
+                trace_entry = {
+                        "event_type": "compilation",
+                        "payload": {
+                                "file_content": {
+                                        "triton_add.ttir": ttir_content,
+                                        "triton_add.ttadapter": ttadapter_content,
+                                        "triton_add.bcmlir": bcmlir_content,
+                                },
+                                "file_path": {
+                                        "triton_add.ttir": "/tmp/triton_add.ttir",
+                                        "triton_add.ttadapter": "/tmp/triton_add.ttadapter",
+                                        "triton_add.bcmlir": "/tmp/triton_add.bcmlir",
+                                },
+                                "python_source": {
+                                        "file_path": "/tmp/test.py",
+                                        "start_line": 20,
+                                        "end_line": 20,
+                                        "code": "x = 1\n",
+                                },
+                        },
+                }
+
+                processed = json.loads(parse_single_trace_content(json.dumps(trace_entry)))
+                mappings = processed["payload"]["source_mappings"]
+
+                self.assertIn("ttadapter", mappings)
+                self.assertIn("bcmlir", mappings)
+                self.assertIn("1", mappings["ttir"])
+                self.assertEqual(mappings["ttir"]["1"]["ttadapter_lines"], [1])
+                self.assertEqual(mappings["ttir"]["1"]["bcmlir_lines"], [1])
+                self.assertEqual(mappings["ttadapter"]["1"]["ttir_lines"], [1])
+                self.assertEqual(mappings["bcmlir"]["1"]["ttir_lines"], [1])
+                self.assertEqual(mappings["python"][20]["ttadapter_lines"], ["1"])
+                self.assertEqual(mappings["python"][20]["bcmlir_lines"], ["1"])
+
+                print("✓ ttadapter and bcmlir cross-IR mapping tests passed")
 
 
 if __name__ == "__main__":

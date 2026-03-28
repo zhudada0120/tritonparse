@@ -79,6 +79,34 @@ _EXTRA_IMPORT_PATTERNS = [
 ]
 
 
+def _infer_execution_device(context_bundle: ContextBundle) -> str:
+    """Infer the most appropriate device string for generated reproducers."""
+    for arg_info in (context_bundle.raw_launch_event.get("extracted_args") or {}).values():
+        if isinstance(arg_info, dict):
+            device = arg_info.get("device")
+            if isinstance(device, str) and device:
+                return "npu" if device.startswith("npu") else "cuda"
+
+    backend = context_bundle.compile.get("backend")
+    if isinstance(backend, str) and backend:
+        return "npu" if backend.startswith("npu") else "cuda"
+
+    target = context_bundle.raw_launch_event.get("compilation_metadata", {}).get("target", {})
+    target_backend = target.get("backend") if isinstance(target, dict) else None
+    if isinstance(target_backend, str) and target_backend:
+        return "npu" if target_backend.startswith("npu") else "cuda"
+
+    return "cuda"
+
+
+def _build_synchronize_snippet(context_bundle: ContextBundle) -> str:
+    """Build the backend-specific synchronize call for generated reproducers."""
+    device = _infer_execution_device(context_bundle)
+    if device == "npu":
+        return "torch.npu.synchronize()"
+    return "torch.cuda.synchronize()"
+
+
 def _detect_extra_imports(source_code: str) -> list[str]:
     """Scan kernel source code for usage of modules that need extra imports.
 
@@ -186,6 +214,7 @@ class DefaultPlaceholderReplacer(PlaceholderReplacer):
     LAUNCH_KERNEL_BODY_PLACEHOLDER = "# {{LAUNCH_KERNEL_BODY_PLACEHOLDER}}"
     # Placeholder for verbose args printing controlled by env var
     VERBOSE_ARGS_PRINT_PLACEHOLDER = "# {{VERBOSE_ARGS_PRINT_PLACEHOLDER}}"
+    DEVICE_SYNCHRONIZE_PLACEHOLDER = "# {{DEVICE_SYNCHRONIZE_PLACEHOLDER}}"
     # Placeholder for reproducer metadata in docstring
     REPRODUCER_METADATA_PLACEHOLDER = "{{REPRODUCER_METADATA_PLACEHOLDER}}"
 
@@ -214,6 +243,10 @@ class DefaultPlaceholderReplacer(PlaceholderReplacer):
         )
         self.register(
             self.VERBOSE_ARGS_PRINT_PLACEHOLDER, self._replace_verbose_args_print
+        )
+        self.register(
+            self.DEVICE_SYNCHRONIZE_PLACEHOLDER,
+            self._replace_device_synchronize,
         )
         # Register handler for reproducer metadata in docstring
         self.register(
@@ -655,6 +688,7 @@ triton.autotune = _patched_autotune
         """Replace launch kernel body with file-based or embedded loading logic."""
         embed_context = kwargs.get("embed_context", False)
         temp_json_path = kwargs.get("temp_json_path")
+        execution_device = _infer_execution_device(context_bundle)
 
         body_lines: list[str] = []
 
@@ -669,7 +703,7 @@ triton.autotune = _patched_autotune
                     "# A default allocator is provided below. If the kernel hangs or produces",
                     "# incorrect results, replace this with the allocator from the original application.",
                     "def _alloc_fn(size: int, align: int, stream):",
-                    "    return torch.empty(size, dtype=torch.int8, device='cuda')",
+                    f"    return torch.empty(size, dtype=torch.int8, device='{execution_device}')",
                     "triton.set_allocator(_alloc_fn)",
                     "",
                 ]
@@ -719,6 +753,15 @@ triton.autotune = _patched_autotune
         ]
         verbose_code = "\n    ".join(verbose_lines)
         return code.replace(self.VERBOSE_ARGS_PRINT_PLACEHOLDER, verbose_code)
+
+    def _replace_device_synchronize(
+        self, code: str, context_bundle: ContextBundle, **kwargs
+    ) -> str:
+        """Replace synchronize placeholder with backend-specific synchronize API."""
+        return code.replace(
+            self.DEVICE_SYNCHRONIZE_PLACEHOLDER,
+            _build_synchronize_snippet(context_bundle),
+        )
 
     def _warn_if_blob_path_present(self, raw_launch_event: dict) -> None:
         """Warn if any tensor argument has blob_path (external dependency)."""

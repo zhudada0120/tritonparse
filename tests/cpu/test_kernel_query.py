@@ -122,6 +122,35 @@ class TestKernelQuery(unittest.TestCase):
         self.assertIn("not found", error_msg)
         self.assertIn("nonexistent_kernel", error_msg)
 
+    def test_kernel_query_uses_display_name(self):
+        """Test that query operations continue to use metadata.name."""
+        events = [
+            {
+                "event_type": "launch",
+                "compilation_metadata": {
+                    "hash": "abc123",
+                    "name": "triton_add aiv",
+                },
+                "grid": [1, 1, 1],
+            },
+            {
+                "event_type": "launch",
+                "compilation_metadata": {
+                    "hash": "abc123",
+                    "name": "triton_add aiv",
+                },
+                "grid": [1, 1, 1],
+            },
+        ]
+
+        summaries = list_kernels(events)
+
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0].name, "triton_add aiv")
+        self.assertEqual(find_launch_index_by_kernel(events, "triton_add aiv", 1), 1)
+        launches = list_launches_for_kernel(events, "triton_add aiv")
+        self.assertEqual(len(launches), 2)
+
     def test_find_launch_index_out_of_range(self):
         """Test that ValueError is raised when launch_id is out of range."""
         gz_file = get_test_ndjson_file()

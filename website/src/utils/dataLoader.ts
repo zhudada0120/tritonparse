@@ -9,6 +9,8 @@ export interface SourceMapping {
     // the current line in the source code. It should be same with the key in the source_mapping.
     ttgir_line?: number;
     ttir_line?: number;
+    ttadapter_line?: number;
+    bcmlir_line?: number;
     ptx_line?: number;
     amdgcn_line?: number;
     llir_line?: number;
@@ -16,6 +18,8 @@ export interface SourceMapping {
     ptx_lines?: number[]; // Array of corresponding PTX lines
     ttir_lines?: number[]; // Array of corresponding TTIR lines
     ttgir_lines?: number[]; // Array of corresponding TTGIR lines
+    ttadapter_lines?: number[]; // Array of corresponding TTAdapter lines
+    bcmlir_lines?: number[]; // Array of corresponding BCMLIR lines
     llir_lines?: number[]; // Array of corresponding LLIR lines
     amdgcn_lines?: number[]; // Array of corresponding AMDGCN lines
     sass_lines?: number[]; // Array of corresponding SASS lines
@@ -65,6 +69,7 @@ export interface StackEntry {
  */
 export interface KernelMetadata {
     hash?: string;
+    name?: string;
     target?: {
         backend?: string;
         arch?: number;

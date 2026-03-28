@@ -20,16 +20,27 @@ from datetime import date, datetime
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union, cast
 
 from triton.knobs import JITHook, LaunchHook
+
+from .ascend.compat import patch_triton_jit_hook_compatibility
 
 from .shared_vars import DEFAULT_TRACE_FILE_PREFIX
 
 
 log = logging.getLogger(__name__)
 
-TEXT_FILE_EXTENSIONS = [".ttir", ".ttgir", ".llir", ".ptx", ".amdgcn", ".json"]
+TEXT_FILE_EXTENSIONS = [
+    ".ttir",
+    ".ttgir",
+    ".ttadapter",
+    ".bcmlir",
+    ".llir",
+    ".ptx",
+    ".amdgcn",
+    ".json",
+]
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB limit for file content extraction
 
 triton_trace_log = logging.getLogger("tritonparse_trace")
@@ -89,6 +100,7 @@ TRITONPARSE_DUMP_SASS = os.getenv("TRITONPARSE_DUMP_SASS", None) in [
 
 # The flag to mark if launch is traced. It is used to avoid initilizing the launch hook twice.
 _trace_launch_enabled = False
+_launch_enter_hook_registration = None
 # Enable tensor blob storage
 TRITONPARSE_SAVE_TENSOR_BLOBS = os.getenv("TRITONPARSE_SAVE_TENSOR_BLOBS", "0") in [
     "1",
@@ -1542,7 +1554,7 @@ class LaunchHookImpl(LaunchHook):
     - Custom metadata added by the launch_metadata function
     """
 
-    def __call__(self, metadata):
+    def __call__(self, *args):
         """
         Handle kernel launch entry point.
 
@@ -1563,7 +1575,11 @@ class LaunchHookImpl(LaunchHook):
                  https://github.com/triton-lang/triton/blob/7ce287dc24b43476cdeb30529089ac361564505d/
                  python/triton/compiler/compiler.py#L512.
         """
-        metadata_dict = metadata.get()
+        if len(args) <= 6:
+            return
+
+        metadata_dict = args[6].get()
+
         # Check kernel allowlist early to avoid unnecessary work
         if _KERNEL_ALLOWLIST_PATTERNS is not None:
             kernel_name = metadata_dict.get("name")
@@ -1586,7 +1602,10 @@ class LaunchHookImpl(LaunchHook):
                 2
             ]  # Now contains detailed arg info
             trace_data["extracted_inductor_args"] = launch_metadata_tritonparse[3]
-        trace_structured_triton("launch", metadata_fn=lambda: convert(trace_data))
+        trace_structured_triton(
+            "launch",
+            metadata_fn=lambda: cast(Dict[str, Any], convert(trace_data)),
+        )
 
 
 def maybe_enable_trace_launch():
@@ -1617,15 +1636,19 @@ def enable_launch_tracing() -> None:
     """
 
     global _trace_launch_enabled
+    global _launch_enter_hook_registration
     if _trace_launch_enabled:
         return
 
     from triton import knobs
+    patch_triton_jit_hook_compatibility()
 
     launch_hook = LaunchHookImpl()
     jit_hook = JITHookImpl()
     knobs.runtime.jit_post_compile_hook = jit_hook
-    knobs.runtime.launch_enter_hook = launch_hook
+    hook_chain = knobs.runtime.launch_enter_hook
+    hook_chain.add(launch_hook)
+    _launch_enter_hook_registration = launch_hook
 
     _trace_launch_enabled = True
 
@@ -1637,13 +1660,19 @@ def disable_launch_tracing() -> None:
     Disable launch event tracing.
     """
     global _trace_launch_enabled
+    global _launch_enter_hook_registration
     if not _trace_launch_enabled:
         return
 
     from triton import knobs
 
     knobs.runtime.jit_post_compile_hook = None
-    knobs.runtime.launch_enter_hook = None
+    if _launch_enter_hook_registration is None:
+        return
+
+    hook_chain = knobs.runtime.launch_enter_hook
+    hook_chain.remove(_launch_enter_hook_registration)
+    _launch_enter_hook_registration = None
 
     _trace_launch_enabled = False
     log.debug("[tritonparse] Launch tracing disabled")
@@ -1778,6 +1807,7 @@ def clear_logging_config():
     """
     global TRITON_TRACE_HANDLER, triton_trace_folder, _KERNEL_ALLOWLIST_PATTERNS
     global _trace_launch_enabled
+    global _launch_enter_hook_registration
     global TENSOR_BLOB_MANAGER
     # 1. Clean up the log handler
     if TRITON_TRACE_HANDLER is not None:
@@ -1800,7 +1830,10 @@ def clear_logging_config():
 
     knobs.compilation.listener = None
     knobs.runtime.jit_post_compile_hook = None
-    knobs.runtime.launch_enter_hook = None
+    if _launch_enter_hook_registration is not None:
+        hook_chain = knobs.runtime.launch_enter_hook
+        hook_chain.remove(_launch_enter_hook_registration)
+        _launch_enter_hook_registration = None
 
     # 5. Unpatch torch.profiler.schedule if patched
     unpatch_profiler_schedule()
