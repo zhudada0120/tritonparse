@@ -28,7 +28,10 @@ logger = get_logger("SourceMapping")
 
 
 def generate_source_mappings(
-    ir_content: str, ir_type: str, other_mappings: List[Any] | None = None
+    ir_content: str,
+    ir_type_or_mapping_kind: str,
+    other_mappings: List[Any] | None = None,
+    use_mapping_kind: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Generate source mappings from intermediate representation (IR) content to the source file.
@@ -47,8 +50,10 @@ def generate_source_mappings(
 
     Args:
         ir_content (str): The content of the intermediate representation.
-        ir_type (str): The type of the intermediate representation (e.g., 'ttir').
+        ir_type_or_mapping_kind (str): The type of the intermediate representation (e.g., 'ttir')
+            or the mapping_kind ('generic', 'ptx', 'sass', 'none') if use_mapping_kind=True.
         other_mappings (List[Any]): A collection of additional mappings, primarily utilized for PTX mappings since PTX's location annotations reference the file name instead of the complete path.
+        use_mapping_kind (bool): If True, interpret ir_type_or_mapping_kind as mapping_kind instead of ir_type.
 
     Returns:
         Dict[str, Dict[str, Any]]: A dictionary mapping line numbers to their corresponding source file,
@@ -56,12 +61,32 @@ def generate_source_mappings(
     """
     if other_mappings is None:
         other_mappings = []
-    if ir_type == "ptx" or ir_type == "amdgcn":
-        return extract_ptx_amdgcn_mappings(ir_content, other_mappings, ir_type)
-    elif ir_type == "sass":
-        from .ir_parser import extract_sass_mappings
 
-        return extract_sass_mappings(ir_content)
+    # For backward compatibility in the generic parsing section, determine the ir_type
+    # When use_mapping_kind=True, we don't have a specific ir_type, so use "ir" as generic
+    ir_type = "ir" if use_mapping_kind else ir_type_or_mapping_kind
+
+    # Parser selection based on mapping_kind (metadata-driven) or ir_type (fallback)
+    if use_mapping_kind:
+        # Metadata-driven parser selection
+        if ir_type_or_mapping_kind == "ptx":
+            return extract_ptx_amdgcn_mappings(ir_content, other_mappings, "ptx")
+        elif ir_type_or_mapping_kind == "sass":
+            from .ir_parser import extract_sass_mappings
+            return extract_sass_mappings(ir_content)
+        elif ir_type_or_mapping_kind == "none":
+            # No source mapping support
+            return {}
+        else:  # "generic" or any other mapping_kind
+            # Fall through to generic loc-based parsing below
+            pass
+    else:
+        # Legacy ir_type-based parser selection (fallback)
+        if ir_type_or_mapping_kind == "ptx" or ir_type_or_mapping_kind == "amdgcn":
+            return extract_ptx_amdgcn_mappings(ir_content, other_mappings, ir_type_or_mapping_kind)
+        elif ir_type_or_mapping_kind == "sass":
+            from .ir_parser import extract_sass_mappings
+            return extract_sass_mappings(ir_content)
 
     loc_defs = extract_loc_definitions(ir_content)
     logger.debug(f"Found {len(loc_defs)} #loc definitions")
@@ -127,11 +152,16 @@ def process_ir(
     file_content: Dict[str, str],
     file_path: Dict[str, str],
     other_mappings: List[Any] | None = None,
+    mapping_kind: str | None = None,
 ):
     ir_content = load_ir_contents(key, file_content, file_path)
     if not ir_content:
         return {}
-    mapping = generate_source_mappings(ir_content, key.split(".")[1], other_mappings)
+    # Use mapping_kind if provided, otherwise fall back to extracting from filename
+    if mapping_kind is None:
+        mapping = generate_source_mappings(ir_content, key.split(".")[1], other_mappings)
+    else:
+        mapping = generate_source_mappings(ir_content, mapping_kind, other_mappings, use_mapping_kind=True)
     logger.debug(f"Generated source mapping for {key}")
     return mapping
 
@@ -254,53 +284,59 @@ def parse_single_trace_content(trace_content: str) -> str:
         file_content = payload.get("file_content", {})
         file_path = payload.get("file_path", {})
 
-        # Find the IR file keys
-        ttir_key = next((k for k in file_content if k.endswith(".ttir")), None)
-        ttgir_key = next((k for k in file_content if k.endswith(".ttgir")), None)
-        ttadapter_key = next(
-            (k for k in file_content if k.endswith(".ttadapter")), None
-        )
-        bcmlir_key = next((k for k in file_content if k.endswith(".bcmlir")), None)
-        ptx_key = next((k for k in file_content if k.endswith(".ptx")), None)
-        amdgcn_key = next((k for k in file_content if k.endswith(".amdgcn")), None)
-        sass_key = next((k for k in file_content if k.endswith(".sass")), None)
-        # Skip if no IR files found
-        if not (
-            ttir_key
-            or ttgir_key
-            or ttadapter_key
-            or bcmlir_key
-            or ptx_key
-            or amdgcn_key
-            or sass_key
-        ):
-            logger.warning("No IR files found in the payload.")
-            # Still return with proper NDJSON format (with newline)
+        # Get ir_stages metadata for dynamic IR discovery (RFC design requirement)
+        if "compilation_metadata" in entry:
+            ir_stages = entry["compilation_metadata"].get("ir_stages", [])
+        elif "compilation_metadata" in payload:
+            ir_stages = payload["compilation_metadata"].get("ir_stages", [])
+        else:
+            ir_stages = []
+
+        if not ir_stages:
+            raise ValueError(
+                "Trace file is missing ir_stages metadata. "
+                "Please regenerate the trace using a version of tritonparse that supports "
+                "the RFC backend-agnostic design."
+            )
+
+        # Dynamic IR discovery based on ir_stages metadata
+        ir_keys_and_maps = []
+        for stage in ir_stages:
+            stage_name = stage["name"]
+            extension = stage["extension"]
+            is_text = stage["is_text"]
+            supports_source_mapping = stage["supports_source_mapping"]
+            mapping_kind = stage["mapping_kind"]  # Extract mapping_kind for parser selection
+
+            # Skip binary files or files without source mapping support
+            if not is_text or not supports_source_mapping:
+                logger.debug(f"Skipping {stage_name}: is_text={is_text}, supports_source_mapping={supports_source_mapping}")
+                continue
+
+            # Find the IR file key in file_content
+            ir_key = next((k for k in file_content if k.endswith(extension)), None)
+            if not ir_key:
+                logger.debug(f"IR file not found for {stage_name} (extension: {extension})")
+                continue
+
+            logger.debug(f"Processing IR: {stage_name} (key: {ir_key}, mapping_kind: {mapping_kind})")
+            ir_keys_and_maps.append((stage_name, ir_key, mapping_kind))
+
+        # Skip if no processable IR files found
+        if not ir_keys_and_maps:
+            logger.warning("No processable IR files found (all are binary or don't support source mapping).")
             return json.dumps(entry, separators=(",", ":")) + "\n"
 
-        # Generate source mappings for all textual IR stages that carry loc info.
-        ttir_map = process_ir(ttir_key, file_content, file_path)
-        ttgir_map = process_ir(ttgir_key, file_content, file_path)
-        ttadapter_map = process_ir(ttadapter_key, file_content, file_path)
-        bcmlir_map = process_ir(bcmlir_key, file_content, file_path)
-        ptx_map = process_ir(ptx_key, file_content, file_path, [ttir_map, ttgir_map])
-        amdgcn_map = process_ir(
-            amdgcn_key, file_content, file_path, [ttir_map, ttgir_map]
-        )
-        sass_map = process_ir(sass_key, file_content, file_path, [ttir_map, ttgir_map])
+        # Process all IR files dynamically
+        ir_maps = {}
+        for stage_name, ir_key, mapping_kind in ir_keys_and_maps:
+            # First IR gets no dependencies, subsequent IRs depend on all previous IRs
+            dependencies = [ir_maps[name] for name, _, _ in ir_keys_and_maps if name in ir_maps and ir_maps[name]]
+            ir_map = process_ir(ir_key, file_content, file_path, dependencies, mapping_kind)
+            ir_maps[stage_name] = ir_map
+            logger.debug(f"Generated source mapping for {stage_name}")
 
         # Create bidirectional mappings between all IR types
-        ir_maps = {
-            "ttir": ttir_map,
-            "ttgir": ttgir_map,
-            "ttadapter": ttadapter_map,
-            "bcmlir": bcmlir_map,
-            "ptx": ptx_map,
-            "amdgcn": amdgcn_map,
-            "sass": sass_map,
-        }
-
-        # Create mappings between all pairs of IR types
         ir_types = list(ir_maps.keys())
         for i, src_type in enumerate(ir_types):
             for tgt_type in ir_types[i + 1 :]:
@@ -308,47 +344,31 @@ def parse_single_trace_content(trace_content: str) -> str:
                     create_bidirectional_mapping(
                         ir_maps[src_type], ir_maps[tgt_type], src_type, tgt_type
                     )
-                    logger.debug(
-                        f"Created bidirectional mapping between {src_type} and {tgt_type}"
-                    )
+                    logger.debug(f"Created bidirectional mapping between {src_type} and {tgt_type}")
 
+        # Create Python source to IR mappings
         py_map = {}
-
         if "python_source" in payload:
-            logger.debug(
-                f"Added Python source information (lines {payload['python_source']['start_line']}-{payload['python_source']['end_line']})"
-            )
+            logger.debug(f"Added Python source information (lines {payload['python_source']['start_line']}-{payload['python_source']['end_line']})")
 
-            # 4. Create Python source to IR mappings. We use the original line numbers as key in the python source code.
-            # Create a list of valid IR mappings, filtering out None keys
+            # Create list of valid IR mappings for Python mapping
             ir_mappings = []
-            ir_keys_and_maps = [
-                (ttir_key, ttir_map),
-                (ttgir_key, ttgir_map),
-                (ttadapter_key, ttadapter_map),
-                (bcmlir_key, bcmlir_map),
-                (ptx_key, ptx_map),
-                (amdgcn_key, amdgcn_map),
-                (sass_key, sass_map),
-            ]
-
-            for key, mapping in ir_keys_and_maps:
-                if key:
-                    ir_mappings.append((get_file_extension(key), mapping))
+            for stage_name, ir_key in ir_keys_and_maps:
+                if ir_key and ir_maps.get(stage_name):
+                    ir_mappings.append((get_file_extension(ir_key), ir_maps[stage_name]))
 
             py_map = create_python_mapping(ir_mappings)
 
-        # Store the mappings in the payload
+        # Dynamically build source_mappings dictionary
         payload["source_mappings"] = {
-            "ttir": ttir_map,
-            "ttgir": ttgir_map,
-            **({"ttadapter": ttadapter_map} if ttadapter_map else {}),
-            **({"bcmlir": bcmlir_map} if bcmlir_map else {}),
-            **({"ptx": ptx_map} if ptx_map else {}),
-            **({"amdgcn": amdgcn_map} if amdgcn_map else {}),
-            **({"sass": sass_map} if sass_map else {}),
-            "python": py_map,
+            stage_name: ir_maps[stage_name]
+            for stage_name in ir_types
+            if ir_maps[stage_name] is not None
         }
+        payload["source_mappings"]["python"] = py_map
+
+        logger.debug(f"Built source_mappings with {len(payload['source_mappings'])} IR types: {list(ir_types)}")
+
     # NDJSON format requires a newline at the end of each line
     return json.dumps(entry, separators=(",", ":")) + "\n"
 

@@ -367,6 +367,7 @@ function App() {
           title={selectedIR}
           language={mapLanguageToHighlighter(selectedIR)}
           onBack={handleBackFromIRView}
+          kernel={kernel}
         />
       );
     } else if (sess.preview.active) {
@@ -540,46 +541,67 @@ function App() {
               onShowUrlInputChange={setShowUrlInput}
             />
 
-            {/* Tab navigation: File Diff button placed as the last (rightmost) button */}
+            {/* Tab navigation: All buttons always visible */}
             <div className="flex space-x-4">
-              {dataLoaded && kernels.length > 0 && !selectedIR && (
-                <>
-                  <button
-                    className={`px-3 py-2 text-sm font-medium rounded-md ${activeTab === "overview" ? "bg-blue-700 text-white shadow-md" : "bg-blue-100 text-blue-700 hover:bg-blue-200"
-                      }`}
-                    onClick={() => {
-                      if (sess.preview?.active) sess.clearPreview();
-                      setShowWelcome(false);
-                      setActiveTab("overview");
+              {/* Kernel Overview button */}
+              <button
+                className={`px-3 py-2 text-sm font-medium rounded-md ${
+                  !dataLoaded || kernels.length === 0
+                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                    : activeTab === "overview"
+                    ? 'bg-blue-700 text-white shadow-md'
+                    : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                }`}
+                onClick={() => {
+                  if (!dataLoaded || kernels.length === 0) {
+                    // Show prompt to load data
+                    alert('Please load a trace file first using the "Load File" button');
+                    return;
+                  }
+                  if (sess.preview?.active) sess.clearPreview();
+                  setShowWelcome(false);
+                  setActiveTab("overview");
 
-                      if (loadedUrl) {
-                        const newUrl = new URL(window.location.href);
-                        newUrl.searchParams.delete("view");
-                        window.history.replaceState({}, "", newUrl.toString());
-                      }
-                    }}
-                  >
-                    Kernel Overview
-                  </button>
-                  <button
-                    className={`px-3 py-2 text-sm font-medium rounded-md ${activeTab === "comparison" ? "bg-blue-700 text-white shadow-md" : "bg-blue-100 text-blue-700 hover:bg-blue-200"
-                      }`}
-                    onClick={() => {
-                      if (sess.preview?.active) sess.clearPreview();
-                      setShowWelcome(false);
-                      setActiveTab("comparison");
+                  if (loadedUrl) {
+                    const newUrl = new URL(window.location.href);
+                    newUrl.searchParams.delete("view");
+                    window.history.replaceState({}, "", newUrl.toString());
+                  }
+                }}
+              >
+                Kernel Overview
+              </button>
 
-                      if (loadedUrl) {
-                        const newUrl = new URL(window.location.href);
-                        newUrl.searchParams.set("view", "ir_code_comparison");
-                        window.history.replaceState({}, "", newUrl.toString());
-                      }
-                    }}
-                  >
-                    IR Code
-                  </button>
-                </>
-              )}
+              {/* IR Code button */}
+              <button
+                className={`px-3 py-2 text-sm font-medium rounded-md ${
+                  !dataLoaded || kernels.length === 0
+                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                    : activeTab === "comparison"
+                    ? 'bg-blue-700 text-white shadow-md'
+                    : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                }`}
+                onClick={() => {
+                  if (!dataLoaded || kernels.length === 0) {
+                    // Show prompt to load data
+                    alert('Please load a trace file first using the "Load File" button');
+                    return;
+                  }
+                  if (sess.preview?.active) sess.clearPreview();
+                  setShowWelcome(false);
+                  setActiveTab("comparison");
+
+                  if (loadedUrl) {
+                    const newUrl = new URL(window.location.href);
+                    newUrl.searchParams.set("view", "ir_code_comparison");
+                    window.history.replaceState({}, "", newUrl.toString());
+                  }
+                }}
+              >
+                IR Code
+              </button>
+
+              {/* File Diff button */}
               <button
                 className={`px-3 py-2 text-sm font-medium rounded-md ${activeTab === "file_diff" ? "bg-blue-700 text-white shadow-md" : "bg-blue-100 text-blue-700 hover:bg-blue-200"
                   }`}
@@ -591,25 +613,35 @@ function App() {
               >
                 File Diff
               </button>
-              {dataLoaded && kernels.length > 0 && (
-              <button
-                    className={`px-3 py-2 text-sm font-medium rounded-md ${activeTab === "ir_analysis" ? "bg-blue-700 text-white shadow-md" : "bg-blue-100 text-blue-700 hover:bg-blue-200"
-                      }`}
-                    onClick={() => {
-                      if (sess.preview?.active) sess.clearPreview();
-                      setShowWelcome(false);
-                      setActiveTab("ir_analysis");
 
-                      if (loadedUrl) {
-                        const newUrl = new URL(window.location.href);
-                        newUrl.searchParams.set("view", "ir_analysis");
-                        window.history.replaceState({}, "", newUrl.toString());
-                      }
-                    }}
-                  >
-                    IR Analysis (Beta)
-                  </button>
-              )}
+              {/* IR Analysis button */}
+              <button
+                className={`px-3 py-2 text-sm font-medium rounded-md ${
+                  !dataLoaded || kernels.length === 0
+                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                    : activeTab === "ir_analysis"
+                    ? 'bg-blue-700 text-white shadow-md'
+                    : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                }`}
+                onClick={() => {
+                  if (!dataLoaded || kernels.length === 0) {
+                    // Show prompt to load data
+                    alert('Please load a trace file first using the "Load File" button');
+                    return;
+                  }
+                  if (sess.preview?.active) sess.clearPreview();
+                  setShowWelcome(false);
+                  setActiveTab("ir_analysis");
+
+                  if (loadedUrl) {
+                    const newUrl = new URL(window.location.href);
+                    newUrl.searchParams.set("view", "ir_analysis");
+                    window.history.replaceState({}, "", newUrl.toString());
+                  }
+                }}
+              >
+                IR Analysis (Beta)
+              </button>
             </div>
           </div>
         </div>

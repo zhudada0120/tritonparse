@@ -5,6 +5,7 @@ import {
   oneDark,
 } from "react-syntax-highlighter/dist/esm/styles/prism";
 import type { SourceMapping } from "../utils/dataLoader";
+import { mapLanguageToHighlighter as dynamicMapLanguageToHighlighter } from "../utils/syntaxHighlight";
 import "./CodeViewer.css";
 
 // Import language support
@@ -168,29 +169,20 @@ interface CodeViewerProps {
  * @returns Syntax highlighter language identifier
  */
 export const mapLanguageToHighlighter = (language: string): string => {
-  const lowerCaseLanguage = language.toLowerCase();
+  // Use dynamic highlighter selection (replaces hardcoded logic)
+  const dynamicHighlighter = dynamicMapLanguageToHighlighter(language);
 
-  // Handle language types with endsWith for better accuracy
-  if (
-    lowerCaseLanguage.endsWith("ttgir") ||
-    lowerCaseLanguage.endsWith("ttir") ||
-    lowerCaseLanguage.endsWith("ttadapter") ||
-    lowerCaseLanguage.endsWith("bcmlir")
-  ) {
-    return 'mlir';
-  } else if (lowerCaseLanguage.endsWith("llir")) {
-    return 'llvm';
-  } else if (lowerCaseLanguage.endsWith("ptx")) {
-    return 'ptx';
-  } else if (lowerCaseLanguage.endsWith("amdgcn")) {
-    return 'amdgcn';
-  } else if (lowerCaseLanguage.endsWith("sass")) {
-    return 'asm';  // SASS is NVIDIA assembly, use generic asm highlighting
-  } else if (lowerCaseLanguage === "python") {
-    return 'python';
-  }
+  // Map dynamic highlighter names to registered highlighter names
+  const highlighterMapping: Record<string, string> = {
+    'mlir': 'llvm',    // MLIR uses LLVM highlighting as fallback
+    'llvm': 'llvm',
+    'asm': 'c',        // Assembly uses C highlighting as fallback
+    'ptx': 'c',        // PTX uses C highlighting as fallback
+    'python': 'python',
+    'text': 'c',       // Use C highlighting as fallback for text (better than plain)
+  };
 
-  return 'plaintext';
+  return highlighterMapping[dynamicHighlighter] || 'c';
 };
 
 /**

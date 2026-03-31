@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol
 
+from tritonparse.backends import extract_backend_from_trace
 from tritonparse.reproducer.function_extractor import (
     extract_autotune_config_params,
     extract_function_with_decorators,
@@ -80,31 +81,27 @@ _EXTRA_IMPORT_PATTERNS = [
 
 
 def _infer_execution_device(context_bundle: ContextBundle) -> str:
-    """Infer the most appropriate device string for generated reproducers."""
-    for arg_info in (context_bundle.raw_launch_event.get("extracted_args") or {}).values():
-        if isinstance(arg_info, dict):
-            device = arg_info.get("device")
-            if isinstance(device, str) and device:
-                return "npu" if device.startswith("npu") else "cuda"
+    """Infer the device prefix from compilation_metadata.device_prefix (RFC design)."""
+    raw_launch_event = context_bundle.raw_launch_event
 
-    backend = context_bundle.compile.get("backend")
-    if isinstance(backend, str) and backend:
-        return "npu" if backend.startswith("npu") else "cuda"
+    compilation_metadata = raw_launch_event.get("compilation_metadata", {})
+    device_prefix = compilation_metadata.get("device_prefix")
 
-    target = context_bundle.raw_launch_event.get("compilation_metadata", {}).get("target", {})
-    target_backend = target.get("backend") if isinstance(target, dict) else None
-    if isinstance(target_backend, str) and target_backend:
-        return "npu" if target_backend.startswith("npu") else "cuda"
+    if device_prefix:
+        logger.debug(f"Using device_prefix from compilation_metadata: {device_prefix}")
+        return device_prefix
 
-    return "cuda"
+    raise ValueError(
+        "Trace file is missing device_prefix in compilation_metadata. "
+        "Please regenerate the trace using a version of tritonparse that supports "
+        "the RFC backend-agnostic design."
+    )
 
 
 def _build_synchronize_snippet(context_bundle: ContextBundle) -> str:
     """Build the backend-specific synchronize call for generated reproducers."""
-    device = _infer_execution_device(context_bundle)
-    if device == "npu":
-        return "torch.npu.synchronize()"
-    return "torch.cuda.synchronize()"
+    device_prefix = _infer_execution_device(context_bundle)
+    return f"torch.{device_prefix}.synchronize()"
 
 
 def _detect_extra_imports(source_code: str) -> list[str]:

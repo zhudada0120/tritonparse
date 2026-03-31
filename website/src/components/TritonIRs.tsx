@@ -1,14 +1,15 @@
 import React from "react";
-import { IRFile } from "../utils/dataLoader";
+import { IRFile, ProcessedKernel } from "../utils/dataLoader";
 import { getDisplayLanguage } from "../utils/irLanguage";
 import { DocumentTextIcon, ChevronRightIcon } from "./icons";
 
 interface TritonIRsProps {
   irFiles: Record<string, IRFile>;
   onViewIR: (irType: string) => void;
+  kernel?: ProcessedKernel; // Optional kernel metadata for display names
 }
 
-const TritonIRs: React.FC<TritonIRsProps> = ({ irFiles, onViewIR }) => {
+const TritonIRs: React.FC<TritonIRsProps> = ({ irFiles, onViewIR, kernel }) => {
   return (
     <div className="bg-white rounded-lg p-4 mb-4 shadow-sm border border-gray-200">
       <h2 className="text-xl font-semibold mb-4 text-gray-800">Triton IRs</h2>
@@ -25,7 +26,7 @@ const TritonIRs: React.FC<TritonIRsProps> = ({ irFiles, onViewIR }) => {
               </div>
               <div className="ml-4">
                 <h3 className="text-lg font-medium text-gray-800">
-                  {getDisplayLanguage(irType)}
+                  {getDisplayLanguage(irType, kernel)}
                 </h3>
                 <p className="text-sm text-gray-600 mt-1">
                   View full {irType.toUpperCase()} code

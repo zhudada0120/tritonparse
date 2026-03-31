@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import CodeViewer from "./CodeViewer";
-import { IRFile } from "../utils/dataLoader";
+import { IRFile, ProcessedKernel } from "../utils/dataLoader";
 import { getDisplayLanguage } from "../utils/irLanguage";
 import CopyCodeButton from "./CopyCodeButton";
 import { ArrowLeftIcon } from "./icons";
@@ -14,6 +14,7 @@ interface SingleCodeViewerProps {
   title: string; // Title to display for the code view
   language?: string; // Language for syntax highlighting
   onBack: () => void; // Callback function when back button is clicked
+  kernel?: ProcessedKernel; // Optional kernel metadata for display names
 }
 
 /**
@@ -26,13 +27,14 @@ const SingleCodeViewer: React.FC<SingleCodeViewerProps> = ({
   title,
   language = "plaintext",
   onBack,
+  kernel,
 }) => {
   // Track highlighted lines for self-referential mapping
   const [highlightedLines, setHighlightedLines] = useState<number[]>([]);
 
   // Determine content to display (either from direct content or from IRFile)
   const codeContent = irContent || (irFile ? irFile.content : "");
-  const displayLanguage = getDisplayLanguage(title);
+  const displayLanguage = getDisplayLanguage(title, kernel);
 
   // Get source mapping if available
   const sourceMapping = irFile?.source_mapping;

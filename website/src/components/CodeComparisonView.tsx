@@ -6,11 +6,13 @@ import CodeViewer from "./CodeViewer";
 import CopyCodeButton from "./CopyCodeButton";
 import {
     IRFile,
+    ProcessedKernel,
     PythonSourceCodeInfo,
     SourceMapping,
     getIRType,
 } from "../utils/dataLoader";
 import { getDisplayLanguage } from "../utils/irLanguage";
+import { generateIRTypesToCheck } from "../utils/dynamicIRExtraction";
 
 /**
  * Props for a single code panel
@@ -31,6 +33,8 @@ interface CodeComparisonViewProps {
     py_code_info?: PythonSourceCodeInfo;
     showPythonSource?: boolean;
     pythonMapping?: Record<string, SourceMapping>;
+    /** Kernel data for dynamic IR type extraction */
+    kernel?: ProcessedKernel;
 }
 
 /**
@@ -79,6 +83,7 @@ const CodeComparisonView: React.FC<CodeComparisonViewProps> = ({
     py_code_info,
     showPythonSource = false,
     pythonMapping,
+    kernel,
 }) => {
     // ==================== State Management ====================
 
@@ -195,7 +200,7 @@ const CodeComparisonView: React.FC<CodeComparisonViewProps> = ({
         title: leftPanel.title || "TTGIR",
         content: leftPanel.content || leftPanel.code?.content || "",
         sourceMapping: leftPanel.code?.source_mapping || {},
-        displayLanguage: getDisplayLanguage(leftPanel.title || "TTGIR")
+        displayLanguage: getDisplayLanguage(leftPanel.title || "TTGIR", kernel)
     }), [leftPanel.title, leftPanel.content, leftPanel.code]);
 
     /**
@@ -206,7 +211,7 @@ const CodeComparisonView: React.FC<CodeComparisonViewProps> = ({
         title: rightPanel.title || "PTX",
         content: rightPanel.content || rightPanel.code?.content || "",
         sourceMapping: rightPanel.code?.source_mapping || {},
-        displayLanguage: getDisplayLanguage(rightPanel.title || "PTX")
+        displayLanguage: getDisplayLanguage(rightPanel.title || "PTX", kernel)
     }), [rightPanel.title, rightPanel.content, rightPanel.code]);
 
     /**
@@ -245,16 +250,10 @@ const CodeComparisonView: React.FC<CodeComparisonViewProps> = ({
             const sourceMapping = sourceMappings[lineKey];
             const targetIRType = getIRType(targetTitle);
 
-            const irTypesToCheck = [
-                { type: "ttgir", property: "ttgir_lines" },
-                { type: "ttir", property: "ttir_lines" },
-                { type: "ttadapter", property: "ttadapter_lines" },
-                { type: "bcmlir", property: "bcmlir_lines" },
-                { type: "ptx", property: "ptx_lines" },
-                { type: "llir", property: "llir_lines" },
-                { type: "amdgcn", property: "amdgcn_lines" },
-                { type: "sass", property: "sass_lines" }
-            ];
+            // Dynamically generate IR types to check (eliminates hardcoded list)
+            if (!kernel) return [];
+
+            const irTypesToCheck = generateIRTypesToCheck(kernel);
 
             for (const { type, property } of irTypesToCheck) {
                 if (targetIRType === type &&
@@ -268,7 +267,7 @@ const CodeComparisonView: React.FC<CodeComparisonViewProps> = ({
 
             return [];
         },
-        [] // Empty deps - pure function, never recreated
+        [kernel] // Dependency on kernel for dynamic extraction
     );
 
     /**

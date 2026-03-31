@@ -91,7 +91,7 @@ const CodeViewInner: React.FC<{
           </select>
           {leftIR && (
             <div className="text-sm text-gray-600 mt-1">
-              Language: {getDisplayLanguage(leftIR)}
+              Language: {getDisplayLanguage(leftIR, kernel)}
             </div>
           )}
         </div>
@@ -134,7 +134,7 @@ const CodeViewInner: React.FC<{
           </select>
           {rightIR && (
             <div className="text-sm text-gray-600 mt-1">
-              Language: {getDisplayLanguage(rightIR)}
+              Language: {getDisplayLanguage(rightIR, kernel)}
             </div>
           )}
         </div>
@@ -189,6 +189,7 @@ const CodeViewInner: React.FC<{
             py_code_info={kernel.pythonSourceInfo}
             showPythonSource={showPythonSource && hasPythonSource}
             pythonMapping={kernel.sourceMappings?.["python"] || {}}
+            kernel={kernel}
           />
         </div>
       ) : (

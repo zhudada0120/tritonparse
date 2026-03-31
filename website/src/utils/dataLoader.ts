@@ -5,24 +5,10 @@ export interface SourceMapping {
     line: number;
     file?: string;
     column?: number;
-    // The {ir_type}_line fields are the line numbers in the current IR file that corresponds to
-    // the current line in the source code. It should be same with the key in the source_mapping.
-    ttgir_line?: number;
-    ttir_line?: number;
-    ttadapter_line?: number;
-    bcmlir_line?: number;
-    ptx_line?: number;
-    amdgcn_line?: number;
-    llir_line?: number;
-    sass_line?: number;
-    ptx_lines?: number[]; // Array of corresponding PTX lines
-    ttir_lines?: number[]; // Array of corresponding TTIR lines
-    ttgir_lines?: number[]; // Array of corresponding TTGIR lines
-    ttadapter_lines?: number[]; // Array of corresponding TTAdapter lines
-    bcmlir_lines?: number[]; // Array of corresponding BCMLIR lines
-    llir_lines?: number[]; // Array of corresponding LLIR lines
-    amdgcn_lines?: number[]; // Array of corresponding AMDGCN lines
-    sass_lines?: number[]; // Array of corresponding SASS lines
+    // Dynamic IR type fields: {ir_type}_line and {ir_type}_lines
+    // Examples: ttir_line, ptx_line, ttir_lines, ptx_lines, etc.
+    // Using index signature to support any IR type without hardcoding
+    [key: string]: number | number[] | string | undefined;
     // New fields for location alias support
     type?: string; // Type of mapping entry, e.g., "loc_def" for loc definition lines
     kind?: string; // Deprecated alias for type, kept for backward compatibility
@@ -65,11 +51,32 @@ export interface StackEntry {
 }
 
 /**
+ * Represents a single IR stage's capabilities
+ * From RFC backend-agnostic design
+ */
+export interface IRStageInfo {
+    /** Stage name (e.g., "ptx", "ttir") */
+    name: string;
+    /** File extension (e.g., ".ptx") */
+    extension: string;
+    /** Whether this is a backend-native stage or tritonparse-derived */
+    stage_origin: "backend" | "derived";
+    /** Whether this stage produces text output */
+    is_text: boolean;
+    /** Whether this stage supports source mapping */
+    supports_source_mapping: boolean;
+    /** What kind of source mapping parser to use */
+    mapping_kind: "generic" | "ptx" | "sass" | "none";
+}
+
+/**
  * Represents kernel compilation metadata
  */
 export interface KernelMetadata {
     hash?: string;
     name?: string;
+    /** IR stage capabilities (from RFC backend-agnostic design) */
+    ir_stages?: IRStageInfo[];
     target?: {
         backend?: string;
         arch?: number;

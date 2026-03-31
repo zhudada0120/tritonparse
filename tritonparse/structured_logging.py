@@ -25,23 +25,23 @@ from typing import Any, Callable, Dict, List, Optional, Union, cast
 from triton.knobs import JITHook, LaunchHook
 
 from .ascend.compat import patch_triton_jit_hook_compatibility
+from .backends import (
+    get_device_prefix_fallback,
+    get_registry_key,
+)
 
 from .shared_vars import DEFAULT_TRACE_FILE_PREFIX
 
 
 log = logging.getLogger(__name__)
 
-TEXT_FILE_EXTENSIONS = [
-    ".ttir",
-    ".ttgir",
-    ".ttadapter",
-    ".bcmlir",
-    ".llir",
-    ".ptx",
-    ".amdgcn",
-    ".json",
-]
+# Dynamically updated by init_backend_metadata() based on ir_stages metadata
+TEXT_FILE_EXTENSIONS: List[str] = []
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB limit for file content extraction
+
+# Backend metadata (initialized at runtime)
+_BACKEND_METADATA: Optional[Dict[str, Any]] = None
+_IR_STAGES: Optional[List[Dict[str, Any]]] = None
 
 triton_trace_log = logging.getLogger("tritonparse_trace")
 # The folder to store the triton trace log.
@@ -1335,6 +1335,13 @@ def maybe_trace_triton(
     extract_python_source_info(trace_data, src)
     extract_metadata_from_src(trace_data, src)
 
+    # Add backend metadata to trace_data
+    if _BACKEND_METADATA is not None:
+        trace_data["compilation_metadata"] = _BACKEND_METADATA.copy()
+        # Add ir_stages if available
+        if _IR_STAGES is not None:
+            trace_data["compilation_metadata"]["ir_stages"] = _IR_STAGES
+
     # Add timing information if available
     if times:
         trace_data["metadata"]["times"] = times
@@ -1463,10 +1470,17 @@ def add_launch_metadata(grid, metadata, arg_dict, inductor_args=None):
     # Extract detailed argument information (only when NOT capturing)
     extracted_args = extract_arg_info(arg_dict)
     extracted_inductor_args = extract_arg_info(inductor_args) if inductor_args else {}
+
+    # Merge backend metadata into launch metadata
+    # This ensures launch events have access to device_prefix and other RFC fields
+    launch_metadata = metadata._asdict()
+    if _BACKEND_METADATA is not None:
+        launch_metadata = {**_BACKEND_METADATA, **launch_metadata}
+
     return {
         "launch_metadata_tritonparse": (
             grid,
-            metadata._asdict(),
+            launch_metadata,
             extracted_args,
             extracted_inductor_args,
         )
@@ -1678,6 +1692,136 @@ def disable_launch_tracing() -> None:
     log.debug("[tritonparse] Launch tracing disabled")
 
 
+
+def init_backend_metadata():
+    """
+    Initialize backend metadata and IR stage information.
+
+    This is the ONLY place where driver.active and add_stages() are called.
+    Updates _BACKEND_METADATA, _IR_STAGES, and TEXT_FILE_EXTENSIONS globals.
+    """
+    global _BACKEND_METADATA, _IR_STAGES, TEXT_FILE_EXTENSIONS
+
+    try:
+        from triton.runtime import driver
+        from triton.backends import backends
+        from triton.backends.compiler import Language
+
+        # Get current active backend
+        active_driver = driver.active
+        target = active_driver.get_current_target()
+
+        # Try to get device_prefix dynamically from PyTorch
+        try:
+            import torch  # Ensure torch is imported before calling get_active_torch_device
+            # Workaround for ascend backend issue: inject torch into driver module
+            import triton.backends.ascend.driver as ascend_driver
+            if not hasattr(ascend_driver, 'torch'):
+                ascend_driver.torch = torch
+            torch_device = active_driver.get_active_torch_device()
+            device_prefix = torch_device.type  # "cuda", "npu", etc.
+            log.debug(f"Dynamically detected device_prefix: {device_prefix}")
+        except (ImportError, AttributeError, NameError) as e:
+            # Fallback to hardcoded mapping if PyTorch not available
+            device_prefix = get_device_prefix_fallback(target.backend)
+            log.debug(
+                f"PyTorch not available, using fallback device_prefix: {device_prefix}"
+            )
+
+        # Get registry key from target backend
+        registry_key = get_registry_key(target.backend)
+
+        # Call add_stages() to get IR types
+        try:
+            backend_obj = backends[registry_key]
+            compiler = backend_obj.compiler(target)
+            options = compiler.parse_options({})
+
+            stages = {}
+            compiler.add_stages(stages, options, Language.TRITON)
+
+            # Build IR stage information
+            # Note: Using inline rule-based logic here (not the metadata-driven functions)
+            # because ir_stages is still being constructed.
+            # These helper functions (_is_text_stage, etc.) are meant for the parse stage
+            # where ir_stages metadata is already available.
+            ir_stages = []
+            for stage_name in stages.keys():
+                # Inline rule: is_text (binary vs text)
+                # Check for known binary stage names (full match, not just suffix)
+                binary_stages = ["npubin", "mlirbc", "cubin", "sass"]
+                is_text = stage_name.lower() not in binary_stages
+
+                # Inline rule: mapping_kind
+                if stage_name.lower() in binary_stages:
+                    mapping_kind = "none"
+                elif stage_name in ["ptx", "amdgcn"]:
+                    mapping_kind = "ptx"
+                elif stage_name.endswith("ir") or stage_name.endswith("IR") or stage_name.startswith("tt"):
+                    mapping_kind = "generic"
+                else:
+                    mapping_kind = "none"
+
+                # Inline rule: supports_source_mapping (has mapping kind != "none")
+                supports_source_mapping = mapping_kind != "none"
+
+                stage_info = {
+                    "name": stage_name,
+                    "extension": f".{stage_name}",
+                    "stage_origin": "backend",
+                    "is_text": is_text,
+                    "supports_source_mapping": supports_source_mapping,
+                    "mapping_kind": mapping_kind,
+                }
+                ir_stages.append(stage_info)
+
+            # Update TEXT_FILE_EXTENSIONS dynamically
+            TEXT_FILE_EXTENSIONS[:] = [
+                stage_info["extension"]
+                for stage_info in ir_stages
+                if stage_info["is_text"]
+            ]
+            TEXT_FILE_EXTENSIONS.append(".json")  # Add source code files
+
+            log.debug(
+                f"Discovered {len(ir_stages)} IR stages: {[s['name'] for s in ir_stages]}"
+            )
+            log.debug(f"TEXT_FILE_EXTENSIONS updated to: {TEXT_FILE_EXTENSIONS}")
+
+        except Exception as e:
+            log.error(
+                f"Failed to call add_stages() for backend {registry_key}: {e}. "
+                f"IR stages discovery failed."
+            )
+            ir_stages = []
+
+        # Store backend metadata
+        _BACKEND_METADATA = {
+            "registry_key": registry_key,
+            "target_backend": target.backend,
+            "device_prefix": device_prefix,
+            "target": {
+                "backend": target.backend,
+                "arch": target.arch,
+                "warp_size": target.warp_size,
+            },
+        }
+
+        _IR_STAGES = ir_stages
+
+        log.info(
+            f"Backend metadata initialized: registry_key={registry_key}, "
+            f"target_backend={target.backend}, device_prefix={device_prefix}"
+        )
+
+    except Exception as e:
+        import traceback as tb
+        log.error(f"Failed to initialize backend metadata: {e}")
+        log.error(f"Full traceback:\n{tb.format_exc()}")
+        _BACKEND_METADATA = None
+        _IR_STAGES = None
+
+
 def init_basic(trace_folder: Optional[str] = None):
     """
     Initialize the basic logging system for Triton compilation.
@@ -1706,6 +1850,9 @@ def init_basic(trace_folder: Optional[str] = None):
         )
     else:
         log.debug("Kernel allowlist not set, tracing all kernels")
+
+    # Initialize backend metadata and IR stages
+    init_backend_metadata()
 
     init_logs()
     maybe_enable_trace_launch()
