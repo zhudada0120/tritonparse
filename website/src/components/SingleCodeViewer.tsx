@@ -1,7 +1,6 @@
 import React, { useState } from "react";
 import CodeViewer from "./CodeViewer";
-import { IRFile } from "../utils/dataLoader";
-import { getDisplayLanguage } from "../utils/irLanguage";
+import { IRFile, SourceMapping, getIRType } from "../utils/dataLoader";
 import CopyCodeButton from "./CopyCodeButton";
 import { ArrowLeftIcon } from "./icons";
 
@@ -12,6 +11,7 @@ interface SingleCodeViewerProps {
   irFile?: IRFile; // IR file object containing content and source mappings
   irContent?: string; // Direct code content as string (alternative to irFile)
   title: string; // Title to display for the code view
+  displayName?: string; // Descriptor-provided stage label
   language?: string; // Language for syntax highlighting
   onBack: () => void; // Callback function when back button is clicked
 }
@@ -24,6 +24,7 @@ const SingleCodeViewer: React.FC<SingleCodeViewerProps> = ({
   irFile,
   irContent,
   title,
+  displayName,
   language = "plaintext",
   onBack,
 }) => {
@@ -32,7 +33,8 @@ const SingleCodeViewer: React.FC<SingleCodeViewerProps> = ({
 
   // Determine content to display (either from direct content or from IRFile)
   const codeContent = irContent || (irFile ? irFile.content : "");
-  const displayLanguage = getDisplayLanguage(title);
+  const resolvedDisplayName = displayName || getIRType(title).replace(/_/g, " ").toUpperCase();
+  const stageName = getIRType(title);
 
   // Get source mapping if available
   const sourceMapping = irFile?.source_mapping;
@@ -50,13 +52,15 @@ const SingleCodeViewer: React.FC<SingleCodeViewerProps> = ({
     if (sourceMapping) {
       const lineKey = lineNumber.toString();
       const clickedMapping = sourceMapping[lineKey];
+      const stageLineKey = `${stageName}_line`;
+      const clickedStageLine = clickedMapping?.[stageLineKey];
 
-      if (clickedMapping && clickedMapping.ttgir_line) {
-        // Find all lines that map to the same TTGIR line
+      if (clickedMapping && typeof clickedStageLine !== "undefined") {
+        // Find all lines that map to the same stage line.
         const relatedLines = Object.entries(sourceMapping)
           .filter(
             ([key, mapping]) =>
-              mapping.ttgir_line === clickedMapping.ttgir_line &&
+              (mapping as SourceMapping)[stageLineKey] === clickedStageLine &&
               parseInt(lineKey, 10) !== parseInt(key, 10) // Skip the clicked line itself
           )
           .map(([line]) => parseInt(line, 10));
@@ -95,7 +99,7 @@ const SingleCodeViewer: React.FC<SingleCodeViewerProps> = ({
         </button>
         <div>
           <h1 className="text-2xl font-bold text-gray-800">{title}</h1>
-          <p className="text-gray-600">Language: {displayLanguage}</p>
+          <p className="text-gray-600">Language: {resolvedDisplayName}</p>
         </div>
       </div>
 
@@ -106,7 +110,7 @@ const SingleCodeViewer: React.FC<SingleCodeViewerProps> = ({
           <span>{title}</span>
           <div className="flex items-center gap-2">
             <span className="text-sm bg-blue-700 px-2 py-1 rounded">
-              {displayLanguage}
+              {resolvedDisplayName}
             </span>
             <CopyCodeButton
               code={codeContent}

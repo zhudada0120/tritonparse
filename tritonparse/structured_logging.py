@@ -24,12 +24,17 @@ from typing import Any, Callable, Dict, List, Optional, Union
 from triton.knobs import JITHook, LaunchHook
 from tritonparse._json_compat import dumps, loads
 
+from .backend import (
+    GENERIC_TEXT_ARTIFACT_EXTENSIONS,
+    build_backend_trace_contract,
+    build_stage_descriptor_trace_contract,
+    get_backend_registry,
+)
 from .shared_vars import DEFAULT_TRACE_FILE_PREFIX, is_fbcode
 
 
 log = logging.getLogger(__name__)
 
-TEXT_FILE_EXTENSIONS = [".ttir", ".ttgir", ".llir", ".ptx", ".amdgcn", ".json"]
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB limit for file content extraction
 
 triton_trace_log = logging.getLogger("tritonparse_trace")
@@ -886,20 +891,38 @@ def extract_python_source_info(trace_data: Dict[str, Any], source):
     }
 
 
-def extract_file_content(trace_data: Dict[str, Any], metadata_group: Dict[str, str]):
+def _resolve_backend_adapter(
+    metadata: Dict[str, Any],
+    metadata_group: Dict[str, str] | None = None,
+    device_prefix: str | None = None,
+):
+    registry = get_backend_registry()
+    return registry.resolve_from_runtime(adapter_name=metadata.get("adapter_name"))
+
+
+def extract_file_content(
+    trace_data: Dict[str, Any], metadata_group: Dict[str, str], adapter
+):
     """
     Extract file content from metadata_group and add it to trace_data.
 
     Args:
         trace_data (Dict): Dictionary to store extracted information
         metadata_group (Dict): Dictionary mapping filenames to file paths
+        adapter: Backend adapter used to classify runtime artifacts.
     """
     for ir_filename, file_path in metadata_group.items():
         # Add file path to trace data
         trace_data["file_path"][ir_filename] = file_path
 
-        # Check if this is a text file we can read
-        if any(ir_filename.endswith(ext) for ext in TEXT_FILE_EXTENSIONS):
+        stage = adapter.classify_artifact(ir_filename)
+        is_generic_text_artifact = (
+            Path(ir_filename).suffix in GENERIC_TEXT_ARTIFACT_EXTENSIONS
+        )
+        if stage and not stage.is_text:
+            continue
+
+        if stage or is_generic_text_artifact:
             try:
                 # Check file size before reading to avoid memory issues
                 file_size = os.path.getsize(file_path)
@@ -915,26 +938,18 @@ def extract_file_content(trace_data: Dict[str, Any], metadata_group: Dict[str, s
                 message = f"<error reading file: {str(e)}>"
                 trace_data["file_content"][ir_filename] = message
                 log.debug(f"Error reading file {file_path}: {e}")
-    cubin_keys = [key for key in metadata_group.keys() if key.endswith(".cubin")]
-    cubin_path = metadata_group[cubin_keys[0]] if cubin_keys else None
 
-    if TRITONPARSE_DUMP_SASS and cubin_path:
-        filename_no_ext = os.path.splitext(os.path.basename(cubin_path))[0]
-        sass_filename = f"{filename_no_ext}.sass"
+    if TRITONPARSE_DUMP_SASS:
         try:
-            import tritonparse.tools.disasm
-
-            sass_content = tritonparse.tools.disasm.extract(cubin_path)
-            trace_data["file_content"][sass_filename] = sass_content
+            derived_artifacts = adapter.collect_derived_artifact_contents(metadata_group)
+            for artifact_name, artifact_content in derived_artifacts.items():
+                trace_data["file_content"][artifact_name] = artifact_content
         except subprocess.CalledProcessError as e:
-            message = f"<nvdisasm failed: {str(e)}>"
-            trace_data["file_content"][sass_filename] = message
+            log.debug(f"Failed to collect derived artifacts: {e}")
         except OSError as e:
-            message = f"<error reading cubin file: {str(e)}>"
-            trace_data["file_content"][sass_filename] = message
+            log.debug(f"Failed to read runtime artifact for derived collection: {e}")
         except Exception as e:
-            message = f"<error dumping SASS: {str(e)}>"
-            trace_data["file_content"][sass_filename] = message
+            log.debug(f"Failed to collect derived artifacts: {e}")
 
 
 def extract_metadata_from_src(trace_data, src):
@@ -1356,8 +1371,14 @@ def maybe_trace_triton(
                 trace_data["pt_info"][attr_name] = attr_value
     if trace_id:
         trace_data["pt_info"]["attempt"] = trace_id.attempt
+    adapter = _resolve_backend_adapter(trace_data["metadata"], metadata_group)
+    trace_data["metadata"].update(build_backend_trace_contract(adapter))
+    trace_data["metadata"]["stage_descriptors"] = build_stage_descriptor_trace_contract(
+        adapter,
+        list(metadata_group.keys()),
+    )
     # Extract content from all IR and other files in the metadata group
-    extract_file_content(trace_data, metadata_group)
+    extract_file_content(trace_data, metadata_group, adapter)
     # Extract Python source code information if available
     extract_python_source_info(trace_data, src)
     extract_metadata_from_src(trace_data, src)
@@ -1511,10 +1532,18 @@ def add_launch_metadata(grid, metadata, arg_dict, inductor_args=None):
     # Extract detailed argument information (only when NOT capturing)
     extracted_args = extract_arg_info(arg_dict)
     extracted_inductor_args = extract_arg_info(inductor_args) if inductor_args else {}
+    launch_metadata = metadata._asdict()
+    device_prefix = None
+    for arg_value in arg_dict.values():
+        if TORCH_INSTALLED and isinstance(arg_value, torch.Tensor):
+            device_prefix = str(arg_value.device).split(":", 1)[0]
+            break
+    adapter = _resolve_backend_adapter(launch_metadata, device_prefix=device_prefix)
+    launch_metadata.update(build_backend_trace_contract(adapter))
     return {
         "launch_metadata_tritonparse": (
             grid,
-            metadata._asdict(),
+            launch_metadata,
             extracted_args,
             extracted_inductor_args,
         )

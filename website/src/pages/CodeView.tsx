@@ -1,7 +1,13 @@
 import React, { useState, useMemo } from "react";
-import { ProcessedKernel, getIRType } from "../utils/dataLoader";
+import {
+  ProcessedKernel,
+  getDefaultKernelStagePair,
+  getIRType,
+  getDisplayableKernelStageDescriptors,
+  getStageDisplayName,
+  getStageSyntaxId,
+} from "../utils/dataLoader";
 import CodeComparisonView from "../components/CodeComparisonView";
-import { getDisplayLanguage } from "../utils/irLanguage";
 import { mapLanguageToHighlighter } from "../components/CodeViewer";
 import { ArrowsRightLeftIcon } from "../components/icons";
 
@@ -16,29 +22,6 @@ interface CodeViewProps {
 /**
  * Helper function to find default IR files for left and right panels
  */
-function findDefaultIRFiles(irFiles: string[]): { left: string; right: string } {
-  let left = "";
-  let right = "";
-
-  const ttgirFile = irFiles.find(key => key.toLowerCase().includes("ttgir"));
-  if (ttgirFile) {
-    left = ttgirFile;
-  } else if (irFiles.length > 0) {
-    left = irFiles[0];
-  }
-
-  const ptxFile = irFiles.find(key => key.toLowerCase().includes("ptx"));
-  if (ptxFile) {
-    right = ptxFile;
-  } else if (irFiles.length > 1) {
-    right = irFiles[1];
-  } else if (irFiles.length === 1) {
-    right = irFiles[0];
-  }
-
-  return { left, right };
-}
-
 /**
  * Inner component that manages IR selection state
  * This is keyed by selectedKernel in the parent, so it remounts when kernel changes
@@ -85,13 +68,13 @@ const CodeViewInner: React.FC<{
             )}
             {irFiles.map((file) => (
               <option key={`left-${file}`} value={file}>
-                {file}
+                {getStageDisplayName(kernel, file)}: {file}
               </option>
             ))}
           </select>
           {leftIR && (
             <div className="text-sm text-gray-600 mt-1">
-              Language: {getDisplayLanguage(leftIR)}
+              Language: {getStageDisplayName(kernel, leftIR)}
             </div>
           )}
         </div>
@@ -128,13 +111,13 @@ const CodeViewInner: React.FC<{
             )}
             {irFiles.map((file) => (
               <option key={`right-${file}`} value={file}>
-                {file}
+                {getStageDisplayName(kernel, file)}: {file}
               </option>
             ))}
           </select>
           {rightIR && (
             <div className="text-sm text-gray-600 mt-1">
-              Language: {getDisplayLanguage(rightIR)}
+              Language: {getStageDisplayName(kernel, rightIR)}
             </div>
           )}
         </div>
@@ -175,16 +158,18 @@ const CodeViewInner: React.FC<{
                 content: kernel.irFiles[leftIR],
                 source_mapping: kernel.sourceMappings?.[getIRType(leftIR)] || {}
               },
-              language: mapLanguageToHighlighter(leftIR),
-              title: leftIR
+              language: mapLanguageToHighlighter(getStageSyntaxId(kernel, leftIR)),
+              title: leftIR,
+              displayName: getStageDisplayName(kernel, leftIR),
             }}
             rightPanel={{
               code: {
                 content: kernel.irFiles[rightIR],
                 source_mapping: kernel.sourceMappings?.[getIRType(rightIR)] || {}
               },
-              language: mapLanguageToHighlighter(rightIR),
-              title: rightIR
+              language: mapLanguageToHighlighter(getStageSyntaxId(kernel, rightIR)),
+              title: rightIR,
+              displayName: getStageDisplayName(kernel, rightIR),
             }}
             py_code_info={kernel.pythonSourceInfo}
             showPythonSource={showPythonSource && hasPythonSource}
@@ -212,15 +197,15 @@ const CodeView: React.FC<CodeViewProps> = ({ kernels, selectedKernel = 0 }) => {
 
   // Memoize irFiles to ensure stable reference for dependency arrays
   const irFiles = useMemo(
-    () => (kernel ? Object.keys(kernel.irFiles) : []),
+    () => (kernel ? getDisplayableKernelStageDescriptors(kernel).map(stage => stage.fileName) : []),
     [kernel]
   );
 
   // Compute default IR files
   const defaultIRFiles = useMemo(() => {
     if (irFiles.length === 0) return { left: "", right: "" };
-    return findDefaultIRFiles(irFiles);
-  }, [irFiles]);
+    return getDefaultKernelStagePair(kernel);
+  }, [irFiles, kernel]);
 
   // Return a message if no kernel data is available
   if (!kernel) {

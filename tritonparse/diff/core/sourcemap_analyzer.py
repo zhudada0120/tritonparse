@@ -15,11 +15,8 @@ Per the design document Section 4:
 
 from typing import Any
 
+from tritonparse.backend import get_default_ir_types
 from tritonparse.diff.core.diff_types import PythonLineDiff
-
-
-# IR types to analyze for source mapping comparison
-IR_TYPES = ["ttir", "ttgir", "llir", "ptx", "amdgcn"]
 
 
 class SourcemapAnalyzer:
@@ -46,11 +43,15 @@ class SourcemapAnalyzer:
             comp_a: First compilation event.
             comp_b: Second compilation event.
             ir_types: Optional list of IR types to analyze.
-                      Defaults to IR_TYPES if not provided.
+                      Defaults to the stages actually present in the events.
         """
         self.comp_a = comp_a
         self.comp_b = comp_b
-        self.ir_types = ir_types or IR_TYPES
+        self.ir_types = ir_types or get_default_ir_types(
+            comp_a,
+            comp_b,
+            source_mapping_only=True,
+        )
 
     def analyze(self) -> dict[int, PythonLineDiff]:
         """Analyze IR differences organized by Python source line.

@@ -8,9 +8,9 @@ import {
     IRFile,
     PythonSourceCodeInfo,
     SourceMapping,
+    getStageDisplayName,
     getIRType,
 } from "../utils/dataLoader";
-import { getDisplayLanguage } from "../utils/irLanguage";
 
 /**
  * Props for a single code panel
@@ -20,6 +20,7 @@ interface CodePanelProps {
     content?: string;
     language?: string;
     title?: string;
+    displayName?: string;
 }
 
 /**
@@ -192,22 +193,22 @@ const CodeComparisonView: React.FC<CodeComparisonViewProps> = ({
      * Only recomputes when actual panel props change
      */
     const leftPanel_data = useMemo<PanelData>(() => ({
-        title: leftPanel.title || "TTGIR",
+        title: leftPanel.title || "",
         content: leftPanel.content || leftPanel.code?.content || "",
         sourceMapping: leftPanel.code?.source_mapping || {},
-        displayLanguage: getDisplayLanguage(leftPanel.title || "TTGIR")
-    }), [leftPanel.title, leftPanel.content, leftPanel.code]);
+        displayLanguage: leftPanel.displayName || getStageDisplayName(undefined, leftPanel.title || "")
+    }), [leftPanel.title, leftPanel.content, leftPanel.code, leftPanel.displayName]);
 
     /**
      * Memoized right panel data
      * Only recomputes when actual panel props change
      */
     const rightPanel_data = useMemo<PanelData>(() => ({
-        title: rightPanel.title || "PTX",
+        title: rightPanel.title || "",
         content: rightPanel.content || rightPanel.code?.content || "",
         sourceMapping: rightPanel.code?.source_mapping || {},
-        displayLanguage: getDisplayLanguage(rightPanel.title || "PTX")
-    }), [rightPanel.title, rightPanel.content, rightPanel.code]);
+        displayLanguage: rightPanel.displayName || getStageDisplayName(undefined, rightPanel.title || "")
+    }), [rightPanel.title, rightPanel.content, rightPanel.code, rightPanel.displayName]);
 
     /**
      * Memoized Python source info
@@ -245,23 +246,11 @@ const CodeComparisonView: React.FC<CodeComparisonViewProps> = ({
             const sourceMapping = sourceMappings[lineKey];
             const targetIRType = getIRType(targetTitle);
 
-            const irTypesToCheck = [
-                { type: "ttgir", property: "ttgir_lines" },
-                { type: "ttir", property: "ttir_lines" },
-                { type: "ptx", property: "ptx_lines" },
-                { type: "llir", property: "llir_lines" },
-                { type: "amdgcn", property: "amdgcn_lines" },
-                { type: "sass", property: "sass_lines" }
-            ];
-
-            for (const { type, property } of irTypesToCheck) {
-                if (targetIRType === type &&
-                    sourceMapping[property as keyof SourceMapping] !== undefined) {
-                    const lines = sourceMapping[property as keyof SourceMapping] as number[];
-                    return lines.map(line =>
-                        typeof line === "string" ? parseInt(line, 10) : line
-                    );
-                }
+            const mappedLines = sourceMapping[`${targetIRType}_lines`];
+            if (Array.isArray(mappedLines)) {
+                return mappedLines.map(line =>
+                    typeof line === "string" ? parseInt(line, 10) : Number(line)
+                );
             }
 
             return [];

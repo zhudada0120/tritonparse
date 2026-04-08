@@ -1,7 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import DiffComparisonView from "../components/DiffComparisonView";
 import { useFileDiffSession } from "../context/FileDiffSession";
-import { ProcessedKernel, loadLogData, loadLogDataFromFile, processKernelData, getIRType } from "../utils/dataLoader";
+import {
+  ProcessedKernel,
+  getKernelContentByStageName,
+  getKernelStageDescriptors,
+  getKernelStageNames,
+  getStageDisplayName,
+  getStageSyntaxId,
+  loadLogData,
+  loadLogDataFromFile,
+  processKernelData,
+} from "../utils/dataLoader";
+import { mapLanguageToHighlighter } from "../components/CodeViewer";
 import { normalizeDataUrl } from "../utils/urlUtils";
 import "../types/global.d.ts";
 
@@ -34,21 +45,23 @@ function findKernelIndexByHash(hash: string | null, kernels: ProcessedKernel[]):
 function listIRTypesForKernel(kernel: ProcessedKernel | undefined): Set<string> {
   const s = new Set<string>();
   if (!kernel) return s;
-  for (const key of Object.keys(kernel.irFiles || {})) {
-    s.add(getIRType(key));
-  }
+  getKernelStageNames(kernel).forEach(stageName => s.add(stageName));
   if (kernel.pythonSourceInfo?.code) s.add("python");
   return s;
 }
 
 function getContentByIRType(kernel: ProcessedKernel | undefined, irType: string): string {
-  if (!kernel) return "";
-  if (irType === "python") {
-    return kernel.pythonSourceInfo?.code || "";
+  return getKernelContentByStageName(kernel, irType);
+}
+
+function getStageOrder(
+  kernel: ProcessedKernel | undefined,
+  stageName: string,
+): number {
+  if (stageName === "python") {
+    return 0;
   }
-  const keys = Object.keys(kernel.irFiles || {});
-  const found = keys.find(k => getIRType(k) === irType);
-  return found ? kernel.irFiles[found] : "";
+  return getKernelStageDescriptors(kernel).find(stage => stage.name === stageName)?.displayOrder ?? Number.MAX_SAFE_INTEGER;
 }
 
 const FileDiffView: React.FC<FileDiffViewProps> = ({ kernelsLeft, selectedLeftIndex, leftLoadedUrl }) => {
@@ -71,7 +84,7 @@ const FileDiffView: React.FC<FileDiffViewProps> = ({ kernelsLeft, selectedLeftIn
   const [leftIdx, setLeftIdx] = useState<number>(Math.max(0, selectedLeftIndex));
   const [rightIdx, setRightIdx] = useState<number>(0);
   const [mode, setMode] = useState<DiffMode>("single");
-  const [irType, setIrType] = useState<string>("ttgir");
+  const [irType, setIrType] = useState<string>("");
 
   // Diff options
   const [ignoreWs, setIgnoreWs] = useState<boolean>(true);
@@ -240,11 +253,29 @@ const FileDiffView: React.FC<FileDiffViewProps> = ({ kernelsLeft, selectedLeftIn
     listIRTypesForKernel(left).forEach(t => set.add(t));
     listIRTypesForKernel(right).forEach(t => set.add(t));
     if (set.size === 0) return ["python"] as string[];
-    return Array.from(set);
+    return Array.from(set).sort((leftStageName, rightStageName) => {
+      const orderDelta = Math.min(
+        getStageOrder(left, leftStageName),
+        getStageOrder(right, leftStageName),
+      ) - Math.min(
+        getStageOrder(left, rightStageName),
+        getStageOrder(right, rightStageName),
+      );
+      if (orderDelta !== 0) {
+        return orderDelta;
+      }
+      return leftStageName.localeCompare(rightStageName);
+    });
   }, [kernelsLeft, kernelsRight, leftIdx, rightIdx, leftLoadedFromLocal, leftKernelsFromLocal, leftLoadedUrlLocal, leftKernelsFromUrl]);
 
   useEffect(() => {
-    if (!irType && unionIrTypes.length > 0) setIrType(unionIrTypes[0]);
+    if (!irType && unionIrTypes.length > 0) {
+      setIrType(unionIrTypes[0]);
+      return;
+    }
+    if (irType && !unionIrTypes.includes(irType) && unionIrTypes.length > 0) {
+      setIrType(unionIrTypes[0]);
+    }
   }, [unionIrTypes, irType]);
 
   // Update URL on state changes (File Diff owns its params)
@@ -313,7 +344,7 @@ const FileDiffView: React.FC<FileDiffViewProps> = ({ kernelsLeft, selectedLeftIn
     return (
       <div>
         <div className="flex items-center justify-between mb-3">
-          <div className="text-gray-700 font-medium">IR Type: <span className="text-blue-700">{irType}</span></div>
+          <div className="text-gray-700 font-medium">IR Type: <span className="text-blue-700">{getStageDisplayName(leftKernel || rightKernel, irType)}</span></div>
           <div className="text-sm text-gray-500">
             {missingLeft && <span className="mr-2">Left: Not available</span>}
             {missingRight && <span>Right: Not available</span>}
@@ -325,7 +356,7 @@ const FileDiffView: React.FC<FileDiffViewProps> = ({ kernelsLeft, selectedLeftIn
             leftContent={leftContent}
             rightContent={rightContent}
             height="calc(100vh - 14rem)"
-            language={irType === "python" ? "python" : "plaintext"}
+            language={mapLanguageToHighlighter(getStageSyntaxId(leftKernel || rightKernel, irType))}
             options={{
               ignoreWhitespace: ignoreWs,
               wordLevel,
@@ -357,7 +388,7 @@ const FileDiffView: React.FC<FileDiffViewProps> = ({ kernelsLeft, selectedLeftIn
                 className="w-full text-left px-4 py-3 flex items-center justify-between hover:bg-gray-50"
                 onClick={() => toggle(t)}
               >
-                <div className="font-medium text-gray-800">{t}</div>
+                <div className="font-medium text-gray-800">{getStageDisplayName(leftKernel || rightKernel, t)}</div>
                 <div className="text-sm text-gray-500">
                   {missingLeft && <span className="mr-2">Left: N/A</span>}
                   {missingRight && <span>Right: N/A</span>}
@@ -371,7 +402,7 @@ const FileDiffView: React.FC<FileDiffViewProps> = ({ kernelsLeft, selectedLeftIn
                       leftContent={leftContent}
                       rightContent={rightContent}
                       height="calc(100vh - 14rem)"
-                      language={t === "python" ? "python" : "plaintext"}
+                      language={mapLanguageToHighlighter(getStageSyntaxId(leftKernel || rightKernel, t))}
                       options={{
                         ignoreWhitespace: ignoreWs,
                         wordLevel,
@@ -629,7 +660,7 @@ const FileDiffView: React.FC<FileDiffViewProps> = ({ kernelsLeft, selectedLeftIn
                 onChange={(e) => setIrType(e.target.value)}
               >
                 {unionIrTypes.map(t => (
-                  <option key={t} value={t}>{t}</option>
+                  <option key={t} value={t}>{getStageDisplayName(leftKernel || rightKernel, t)}</option>
                 ))}
               </select>
             </div>

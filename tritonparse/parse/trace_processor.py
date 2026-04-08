@@ -6,22 +6,22 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from tritonparse._json_compat import dumps, JSONDecodeError, loads
+from tritonparse.backend import (
+    create_parser_from_id,
+    get_backend_registry,
+    get_default_ir_types,
+    get_present_ir_stages,
+)
 from tritonparse.tools.compression import open_compressed_file
 from tritonparse.tp_logger import get_logger
 
 from .event_diff import _generate_autotune_analysis_events, _generate_launch_diff
 from .ir_analysis import _generate_ir_analysis
-from .ir_parser import (
-    extract_code_locations,
-    extract_loc_definitions,
-    extract_ptx_amdgcn_mappings,
-)
 from .mapper import create_bidirectional_mapping, create_python_mapping
 from .sourcemap_utils import (
     _is_autotune_benchmark_launch,
     compute_launch_event_hash,
     get_autotune_session_id,
-    get_file_extension,
     load_ir_contents,
 )
 
@@ -151,6 +151,49 @@ def get_procedure_checks() -> List[Dict[str, Any]]:
     return _DEFAULT_PROCEDURE_CHECKS
 
 
+def _get_parser_for_ir_type(ir_type: str):
+    if ir_type in {"ttir", "ttgir", "llir"}:
+        return create_parser_from_id("generic_loc", ir_type)
+
+    registry = get_backend_registry()
+    adapter = registry.resolve_from_runtime(
+        adapter_name=(
+            "nvidia"
+            if ir_type in {"ptx", "sass"}
+            else "amd"
+            if ir_type == "amdgcn"
+            else None
+        ),
+    )
+    stage = next(stage for stage in adapter.get_ir_stages() if stage.name == ir_type)
+    return adapter.create_source_mapping_parser(stage)
+
+
+def _resolve_trace_adapter_and_stages(entry: dict[str, Any]):
+    payload = entry.setdefault("payload", {})
+    metadata = payload.get("metadata", {})
+    file_content = payload.get("file_content", {})
+    file_path = payload.get("file_path", {})
+    artifact_names = list(file_content.keys()) or list(file_path.keys())
+
+    has_backend_contract = bool(metadata.get("adapter_name"))
+    if not has_backend_contract:
+        known_extensions = get_backend_registry().known_stage_extensions
+        if any(Path(name).suffix in known_extensions for name in artifact_names):
+            raise ValueError(
+                "Compilation trace is missing required backend contract field: "
+                "payload.metadata.adapter_name"
+            )
+        return None, []
+
+    adapter = get_backend_registry().resolve_from_trace(
+        compilation_metadata=metadata,
+        launch_metadata=entry.get("compilation_metadata", {}),
+    )
+    stages = get_present_ir_stages(adapter, artifact_names)
+    return adapter, stages
+
+
 def generate_source_mappings(
     ir_content: str, ir_type: str, other_mappings: List[Any] | None = None
 ) -> Dict[str, Dict[str, Any]]:
@@ -178,76 +221,14 @@ def generate_source_mappings(
         Dict[str, Dict[str, Any]]: A dictionary mapping line numbers to their corresponding source file,
         line, column, and the line number in the IR.
     """
-    if other_mappings is None:
-        other_mappings = []
-    if ir_type == "ptx" or ir_type == "amdgcn":
-        return extract_ptx_amdgcn_mappings(ir_content, other_mappings, ir_type)
-    elif ir_type == "sass":
-        from .ir_parser import extract_sass_mappings
-
-        return extract_sass_mappings(ir_content)
-
-    loc_defs = extract_loc_definitions(ir_content)
-    logger.debug(f"Found {len(loc_defs)} #loc definitions")
-
-    loc_refs = extract_code_locations(ir_content)
-    logger.debug(f"Found {len(loc_refs)} loc references")
-
-    mappings = {}
-    for ln, loc_id in loc_refs.items():
-        if loc_id.startswith("direct:"):
-            _, file_path, line, col = loc_id.split(":", 3)
-            mappings[str(ln)] = {
-                "file": file_path,
-                "line": int(line),
-                "column": int(col),
-                f"{ir_type}_line": ln,
-            }
-        elif loc_id in loc_defs:
-            info = loc_defs[loc_id]
-            entry = {
-                "file": info["file"],
-                "line": info["line"],
-                "column": info["column"],
-                f"{ir_type}_line": ln,
-            }
-            # Propagate callsite metadata if present
-            if info.get("is_callsite"):
-                entry["is_callsite"] = True
-                entry["callsite_callee"] = info["callsite_callee"]
-                entry["callsite_caller"] = info["callsite_caller"]
-            # Propagate alias metadata if present
-            if "alias_name" in info:
-                entry["alias_name"] = info["alias_name"]
-            if "alias_of" in info:
-                entry["loc_id"] = loc_id
-            mappings[str(ln)] = entry
-
-    # Add separate entries for loc definition lines
-    for loc_id, info in loc_defs.items():
-        if "def_line" not in info:
-            continue
-        def_ln = info["def_line"]
-        # Only create mapping if this line doesn't already have one
-        if str(def_ln) not in mappings:
-            entry = {
-                "file": info["file"],
-                "line": info["line"],
-                "column": info["column"],
-                f"{ir_type}_line": def_ln,
-                "kind": "loc_def",
-            }
-            if "alias_name" in info:
-                entry["alias_name"] = info["alias_name"]
-            if "alias_of" in info:
-                entry["loc_id"] = loc_id
-            mappings[str(def_ln)] = entry
-
-    return mappings
+    parser = _get_parser_for_ir_type(ir_type)
+    return parser.parse(ir_content, other_mappings or [])
 
 
 def process_ir(
     key: str,
+    stage_name: str,
+    parser,
     file_content: Dict[str, str],
     file_path: Dict[str, str],
     other_mappings: List[Any] | None = None,
@@ -255,7 +236,7 @@ def process_ir(
     ir_content = load_ir_contents(key, file_content, file_path)
     if not ir_content:
         return {}
-    mapping = generate_source_mappings(ir_content, key.split(".")[1], other_mappings)
+    mapping = parser.parse(ir_content, other_mappings or [])
     logger.debug(f"Generated source mapping for {key}")
     return mapping
 
@@ -347,6 +328,7 @@ def _create_fake_compilation(
                 "num_ctas": compilation_metadata.get("num_ctas"),
                 "maxnreg": compilation_metadata.get("maxnreg"),
                 "cluster_dims": compilation_metadata.get("cluster_dims"),
+                "adapter_name": compilation_metadata.get("adapter_name"),
             },
             # Empty IR content (cannot be recovered)
             "file_content": {},
@@ -378,43 +360,53 @@ def parse_single_trace_content(trace_content: str) -> str:
         file_content = payload.get("file_content", {})
         file_path = payload.get("file_path", {})
 
-        # Find the IR file keys
-        ttir_key = next((k for k in file_content if k.endswith(".ttir")), None)
-        ttgir_key = next((k for k in file_content if k.endswith(".ttgir")), None)
-        ptx_key = next((k for k in file_content if k.endswith(".ptx")), None)
-        amdgcn_key = next((k for k in file_content if k.endswith(".amdgcn")), None)
-        sass_key = next((k for k in file_content if k.endswith(".sass")), None)
-        # Skip if no IR files found
-        if not (ttir_key or ttgir_key or ptx_key or amdgcn_key or sass_key):
+        adapter, stages = _resolve_trace_adapter_and_stages(entry)
+        if not stages:
             logger.warning("No IR files found in the payload.")
-            # Still return with proper NDJSON format (with newline)
             return dumps(entry) + "\n"
 
-        # generate ttir->source, ttgir->source, ptx->source, sass->source
-        ttir_map = process_ir(ttir_key, file_content, file_path)
-        ttgir_map = process_ir(ttgir_key, file_content, file_path)
-        ptx_map = process_ir(ptx_key, file_content, file_path, [ttir_map, ttgir_map])
-        amdgcn_map = process_ir(
-            amdgcn_key, file_content, file_path, [ttir_map, ttgir_map]
-        )
-        sass_map = process_ir(sass_key, file_content, file_path, [ttir_map, ttgir_map])
+        stage_keys: dict[str, str] = {}
+        for artifact_name in list(file_content.keys()) + list(file_path.keys()):
+            stage = adapter.classify_artifact(artifact_name) if adapter else None
+            if stage and stage.name not in stage_keys:
+                stage_keys[stage.name] = artifact_name
 
-        # Create bidirectional mappings between all IR types
-        ir_maps = {
-            "ttir": ttir_map,
-            "ttgir": ttgir_map,
-            "ptx": ptx_map,
-            "amdgcn": amdgcn_map,
-            "sass": sass_map,
-        }
+        stage_maps: dict[str, dict[str, dict[str, Any]]] = {}
+        resolved_mappings: list[dict[str, dict[str, Any]]] = []
+        ordered_stages = sorted(stages, key=lambda stage: stage.display_order)
 
-        # Create mappings between all pairs of IR types
-        ir_types = list(ir_maps.keys())
+        for stage in ordered_stages:
+            if not stage.supports_source_mapping:
+                continue
+            artifact_key = stage_keys.get(stage.name)
+            if not artifact_key:
+                continue
+            parser = adapter.create_source_mapping_parser(stage)
+            stage_map = process_ir(
+                artifact_key,
+                stage.name,
+                parser,
+                file_content,
+                file_path,
+                resolved_mappings,
+            )
+            stage_maps[stage.name] = stage_map
+            if stage_map:
+                resolved_mappings.append(stage_map)
+
+        if not stage_maps:
+            logger.warning("No source-mappable IR stages found in the payload.")
+            return dumps(entry) + "\n"
+
+        ir_types = list(stage_maps.keys())
         for i, src_type in enumerate(ir_types):
             for tgt_type in ir_types[i + 1 :]:
-                if ir_maps[src_type] and ir_maps[tgt_type]:
+                if stage_maps[src_type] and stage_maps[tgt_type]:
                     create_bidirectional_mapping(
-                        ir_maps[src_type], ir_maps[tgt_type], src_type, tgt_type
+                        stage_maps[src_type],
+                        stage_maps[tgt_type],
+                        src_type,
+                        tgt_type,
                     )
                     logger.debug(
                         f"Created bidirectional mapping between {src_type} and {tgt_type}"
@@ -428,29 +420,16 @@ def parse_single_trace_content(trace_content: str) -> str:
             )
 
             # 4. Create Python source to IR mappings. We use the original line numbers as key in the python source code.
-            # Create a list of valid IR mappings, filtering out None keys
-            ir_mappings = []
-            ir_keys_and_maps = [
-                (ttir_key, ttir_map),
-                (ttgir_key, ttgir_map),
-                (ptx_key, ptx_map),
-                (amdgcn_key, amdgcn_map),
-                (sass_key, sass_map),
+            ir_mappings = [
+                (stage_name, mapping)
+                for stage_name, mapping in stage_maps.items()
+                if mapping
             ]
-
-            for key, mapping in ir_keys_and_maps:
-                if key:
-                    ir_mappings.append((get_file_extension(key), mapping))
-
             py_map = create_python_mapping(ir_mappings)
 
         # Store the mappings in the payload
         payload["source_mappings"] = {
-            "ttir": ttir_map,
-            "ttgir": ttgir_map,
-            **({"ptx": ptx_map} if ptx_map else {}),
-            **({"amdgcn": amdgcn_map} if amdgcn_map else {}),
-            **({"sass": sass_map} if sass_map else {}),
+            **stage_maps,
             "python": py_map,
         }
     # NDJSON format requires a newline at the end of each line

@@ -204,7 +204,11 @@ class TestStructuredLogging(GPUTestBase):
 
         def check_event_type_counts_in_logs(log_dir: str) -> dict:
             """Count 'launch' and unique 'compilation' events in all log files and verify SASS content"""
-            event_counts = {"launch": 0, "sass_found": False}
+            event_counts = {
+                "launch": 0,
+                "sass_found": False,
+                "stage_descriptors_found": False,
+            }
             # Track unique compilation hashes
             compilation_hashes = set()
 
@@ -223,16 +227,29 @@ class TestStructuredLogging(GPUTestBase):
                                         f"  Line {line_num}: event_type = 'launch' (count: {event_counts['launch']})"
                                     )
                                 elif event_type == "compilation":
-                                    # Extract hash from compilation metadata
-                                    compilation_hash = (
-                                        event_data.get("payload", {})
-                                        .get("metadata", {})
-                                        .get("hash")
+                                    metadata = event_data.get("payload", {}).get(
+                                        "metadata", {}
                                     )
+                                    # Extract hash from compilation metadata
+                                    compilation_hash = metadata.get("hash")
                                     if compilation_hash:
                                         compilation_hashes.add(compilation_hash)
                                         print(
                                             f"  Line {line_num}: event_type = 'compilation' (unique hash: {compilation_hash[:8]}...)"
+                                        )
+
+                                    stage_descriptors = metadata.get(
+                                        "stage_descriptors", []
+                                    )
+                                    if stage_descriptors and not event_counts[
+                                        "stage_descriptors_found"
+                                    ]:
+                                        event_counts["stage_descriptors_found"] = True
+                                        self.assertTrue(
+                                            all(
+                                                "name" in stage and "syntax_id" in stage
+                                                for stage in stage_descriptors
+                                            )
                                         )
 
                                     # Check for SASS content in compilation events
@@ -294,6 +311,10 @@ class TestStructuredLogging(GPUTestBase):
             event_counts["launch"],
             2,
             f"Expected 2 'launch' events, found {event_counts['launch']}",
+        )
+        self.assertTrue(
+            event_counts["stage_descriptors_found"],
+            "Stage descriptors were not found in compilation metadata",
         )
 
         # Conditionally verify SASS content based on nvdisasm availability

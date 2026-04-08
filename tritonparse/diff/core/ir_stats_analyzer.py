@@ -16,11 +16,8 @@ import re
 from collections import Counter
 from typing import Any
 
+from tritonparse.backend import get_default_ir_types
 from tritonparse.diff.core.diff_types import IRStats, IRStatsDiff, OperationDiff
-
-
-# IR types to analyze
-IR_TYPES = ["ttir", "ttgir", "llir", "ptx", "amdgcn"]
 
 # Operation patterns for different IR types
 OP_PATTERNS = {
@@ -56,11 +53,11 @@ class IRStatsAnalyzer:
             comp_a: First compilation event.
             comp_b: Second compilation event.
             ir_types: Optional list of IR types to analyze.
-                      Defaults to IR_TYPES if not provided.
+                      Defaults to the stages actually present in the events.
         """
         self.comp_a = comp_a
         self.comp_b = comp_b
-        self.ir_types = ir_types or IR_TYPES
+        self.ir_types = ir_types or get_default_ir_types(comp_a, comp_b)
 
     def analyze(self) -> tuple[dict[str, IRStatsDiff], dict[str, OperationDiff]]:
         """Analyze IR statistics and operation differences.

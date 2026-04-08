@@ -59,7 +59,7 @@ const defaultSide: SideState = { sourceType: null, url: null, kernels: [], selec
 
 const defaultOptions: DiffOptionsState = {
   mode: 'single',
-  irType: 'ttgir',
+  irType: '',
   ignoreWs: true,
   wordLevel: true,
   contextLines: 3,

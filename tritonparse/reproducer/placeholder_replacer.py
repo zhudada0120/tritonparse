@@ -186,6 +186,7 @@ class DefaultPlaceholderReplacer(PlaceholderReplacer):
     LAUNCH_KERNEL_BODY_PLACEHOLDER = "# {{LAUNCH_KERNEL_BODY_PLACEHOLDER}}"
     # Placeholder for verbose args printing controlled by env var
     VERBOSE_ARGS_PRINT_PLACEHOLDER = "# {{VERBOSE_ARGS_PRINT_PLACEHOLDER}}"
+    SYNCHRONIZE_PLACEHOLDER = "# {{SYNCHRONIZE_PLACEHOLDER}}"
     # Placeholder for reproducer metadata in docstring
     REPRODUCER_METADATA_PLACEHOLDER = "{{REPRODUCER_METADATA_PLACEHOLDER}}"
 
@@ -215,6 +216,7 @@ class DefaultPlaceholderReplacer(PlaceholderReplacer):
         self.register(
             self.VERBOSE_ARGS_PRINT_PLACEHOLDER, self._replace_verbose_args_print
         )
+        self.register(self.SYNCHRONIZE_PLACEHOLDER, self._replace_synchronize)
         # Register handler for reproducer metadata in docstring
         self.register(
             self.REPRODUCER_METADATA_PLACEHOLDER, self._replace_reproducer_metadata
@@ -663,6 +665,19 @@ triton.autotune = _patched_autotune
         temp_json_path = kwargs.get("temp_json_path")
 
         body_lines: list[str] = []
+        allocator_device = None
+        for arg_info in context_bundle.tensor_args.values():
+            device = arg_info.get("device")
+            if isinstance(device, str):
+                allocator_device = device
+                break
+        if allocator_device is None:
+            allocator_device = (
+                context_bundle.backend_adapter.get("device_prefix", "cpu") + ":0"
+                if context_bundle.backend_adapter.get("device_prefix")
+                not in {None, "cpu"}
+                else "cpu"
+            )
 
         # Inject triton.set_allocator when the kernel requires scratch memory.
         # Kernels compiled with global_scratch_size > 0 need a custom allocator;
@@ -675,7 +690,7 @@ triton.autotune = _patched_autotune
                     "# A default allocator is provided below. If the kernel hangs or produces",
                     "# incorrect results, replace this with the allocator from the original application.",
                     "def _alloc_fn(size: int, align: int, stream):",
-                    "    return torch.empty(size, dtype=torch.int8, device='cuda')",
+                    f"    return torch.empty(size, dtype=torch.int8, device='{allocator_device}')",
                     "triton.set_allocator(_alloc_fn)",
                     "",
                 ]
@@ -725,6 +740,12 @@ triton.autotune = _patched_autotune
         ]
         verbose_code = "\n    ".join(verbose_lines)
         return code.replace(self.VERBOSE_ARGS_PRINT_PLACEHOLDER, verbose_code)
+
+    def _replace_synchronize(
+        self, code: str, context_bundle: ContextBundle, **kwargs
+    ) -> str:
+        snippet = context_bundle.synchronize_snippet or "pass"
+        return code.replace(self.SYNCHRONIZE_PLACEHOLDER, snippet)
 
     def _warn_if_blob_path_present(self, raw_launch_event: dict) -> None:
         """Warn if any tensor argument has blob_path (external dependency)."""

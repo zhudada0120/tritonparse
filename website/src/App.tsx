@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import "./App.css";
 import {
+  getStageDisplayName,
+  getStageSyntaxId,
   loadLogData,
   loadLogDataFromFile,
   ProcessedKernel,
@@ -365,7 +367,8 @@ function App() {
         <SingleCodeViewer
           irFile={irFile}
           title={selectedIR}
-          language={mapLanguageToHighlighter(selectedIR)}
+          displayName={getStageDisplayName(kernel, selectedIR)}
+          language={mapLanguageToHighlighter(getStageSyntaxId(kernel, selectedIR))}
           onBack={handleBackFromIRView}
         />
       );

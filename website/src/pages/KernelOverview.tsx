@@ -1,7 +1,11 @@
 import React, { useState, useRef, useLayoutEffect, useCallback } from "react";
 import ArgumentViewer from "../components/ArgumentViewer";
 import DiffViewer from "../components/DiffViewer";
-import { ProcessedKernel } from "../utils/dataLoader";
+import {
+  ProcessedKernel,
+  getDisplayableKernelStageDescriptors,
+  getStageDisplayName,
+} from "../utils/dataLoader";
 import ToggleSwitch from "../components/ToggleSwitch";
 import { DocumentTextIcon, ChevronRightIcon } from "../components/icons";
 
@@ -835,11 +839,11 @@ const KernelOverview: React.FC<KernelOverviewProps> = ({
         <div>
           <h3 className="text-lg font-medium mb-2 text-gray-800">IR Files</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {Object.keys(kernel.irFiles).map((irType) => (
+            {getDisplayableKernelStageDescriptors(kernel).map((stage) => (
               <div
-                key={irType}
+                key={stage.fileName}
                 className="bg-gray-50 rounded p-4 border border-gray-200 hover:bg-blue-50 hover:border-blue-200 cursor-pointer transition-colors"
-                onClick={() => onViewIR(irType)}
+                onClick={() => onViewIR(stage.fileName)}
               >
                 <div className="flex items-start">
                   <div className="flex-shrink-0">
@@ -847,10 +851,10 @@ const KernelOverview: React.FC<KernelOverviewProps> = ({
                   </div>
                   <div className="ml-4">
                     <h3 className="text-lg font-medium text-gray-800">
-                      {irType}
+                      {getStageDisplayName(kernel, stage.fileName)}
                     </h3>
                     <p className="text-sm text-gray-600 mt-1">
-                      View full IR code
+                      {stage.fileName}
                     </p>
                   </div>
                   <div className="ml-auto">

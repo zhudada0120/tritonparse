@@ -32,7 +32,6 @@ from tritonparse.diff.core.ir_stats_analyzer import (
     analyze_operation_diff,
     count_operations,
     get_ir_content,
-    IR_TYPES,
     IRStatsAnalyzer,
     OP_PATTERNS,
 )
@@ -77,7 +76,6 @@ __all__ = [
     "analyze_operation_diff",
     "count_operations",
     "get_ir_content",
-    "IR_TYPES",
     "IRStatsAnalyzer",
     "OP_PATTERNS",
 ]

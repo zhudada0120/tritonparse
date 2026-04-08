@@ -8,6 +8,7 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from tritonparse.backend import get_backend_registry
 from tritonparse.tp_logger import get_logger
 
 from .sourcemap_utils import load_ir_contents
@@ -956,14 +957,37 @@ def _generate_ir_analysis(
     entry: str, procedure_checks: list[dict[str, Any]] | None = None
 ):
     payload = entry.setdefault("payload", {})
+    metadata = payload.get("metadata", {})
     file_content = payload.get("file_content", {})
     file_path = payload.get("file_path", {})
     source_mappings = payload.get("source_mappings", {})
 
-    # Find the IR file keys
-    ttir_key = next((k for k in file_content if k.endswith(".ttir")), None)
-    ttgir_key = next((k for k in file_content if k.endswith(".ttgir")), None)
-    amdgcn_key = next((k for k in file_content if k.endswith(".amdgcn")), None)
+    ttir_key = None
+    ttgir_key = None
+    amdgcn_key = None
+    if metadata.get("adapter_name"):
+        try:
+            adapter = get_backend_registry().resolve_from_trace(
+                compilation_metadata=metadata,
+                launch_metadata=entry.get("compilation_metadata", {}),
+            )
+        except ValueError:
+            adapter = None
+        if adapter is not None:
+            for artifact_name in file_content.keys():
+                stage = adapter.classify_artifact(artifact_name)
+                if not stage:
+                    continue
+                if stage.name == "ttir" and ttir_key is None:
+                    ttir_key = artifact_name
+                elif stage.name == "ttgir" and ttgir_key is None:
+                    ttgir_key = artifact_name
+                elif stage.name == "amdgcn" and amdgcn_key is None:
+                    amdgcn_key = artifact_name
+    if ttir_key is None and ttgir_key is None and amdgcn_key is None:
+        ttir_key = next((k for k in file_content if k.endswith(".ttir")), None)
+        ttgir_key = next((k for k in file_content if k.endswith(".ttgir")), None)
+        amdgcn_key = next((k for k in file_content if k.endswith(".amdgcn")), None)
     # Skip if no IR files found
     if not (ttir_key or ttgir_key or amdgcn_key):
         logger.debug("No IR found")

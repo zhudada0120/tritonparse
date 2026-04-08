@@ -240,9 +240,6 @@ def _create_base_tensor(arg_info) -> torch.Tensor:
 
     shape = arg_info.get("shape", [])
     device = arg_info.get("device", "cpu")
-    # Normalize cuda device to cuda:0
-    if isinstance(device, str) and device.startswith("cuda"):
-        device = "cuda:0"
 
     # Extract statistical information if available
     mean = arg_info.get("mean")

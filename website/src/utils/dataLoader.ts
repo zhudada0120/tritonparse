@@ -25,6 +25,218 @@ export interface SourceMapping {
     loc_id?: string; // The #loc identifier (e.g., "13" for #loc13)
     alias_name?: string; // Name of the alias (e.g., "x_ptr" in #loc13 = loc("x_ptr"(#loc)))
     alias_of?: string; // The target #loc this alias points to
+    [key: string]: unknown;
+}
+
+export interface StageDescriptor {
+    name: string;
+    extension: string;
+    displayName: string;
+    displayOrder: number;
+    syntaxId: string;
+    kind: string;
+    isPrimary: boolean;
+    isText: boolean;
+    supportsSourceMapping: boolean;
+}
+
+export interface KernelStageDescriptor extends StageDescriptor {
+    fileName: string;
+}
+
+type TraceStageDescriptor = {
+    name: string;
+    extension: string;
+    kind?: string;
+    display_name?: string;
+    display_order?: number;
+    is_primary?: boolean;
+    is_text?: boolean;
+    supports_source_mapping?: boolean;
+    syntax_id?: string;
+    file_name?: string;
+};
+
+function toDefaultDisplayName(stageName: string): string {
+    return stageName.replace(/_/g, " ").toUpperCase();
+}
+
+function buildFallbackStageDescriptor(fileName: string): KernelStageDescriptor {
+    const extensionMatch = fileName.toLowerCase().match(/(\.[^.]+)$/);
+    const extension = extensionMatch?.[1] || "";
+    const stageName = extension ? extension.slice(1) : fileName.toLowerCase();
+    return {
+        name: stageName,
+        extension,
+        displayName: toDefaultDisplayName(stageName),
+        displayOrder: Number.MAX_SAFE_INTEGER,
+        syntaxId: stageName || "plaintext",
+        kind: "ir",
+        isPrimary: false,
+        isText: true,
+        supportsSourceMapping: true,
+        fileName,
+    };
+}
+
+function normalizeTraceStageDescriptor(
+    rawStage: TraceStageDescriptor,
+    fileName: string,
+): KernelStageDescriptor {
+    return {
+        name: rawStage.name,
+        extension: rawStage.extension,
+        displayName: rawStage.display_name || toDefaultDisplayName(rawStage.name),
+        displayOrder: rawStage.display_order ?? Number.MAX_SAFE_INTEGER,
+        syntaxId: rawStage.syntax_id || rawStage.name || "plaintext",
+        kind: rawStage.kind || "ir",
+        isPrimary: rawStage.is_primary ?? false,
+        isText: rawStage.is_text ?? true,
+        supportsSourceMapping: rawStage.supports_source_mapping ?? true,
+        fileName,
+    };
+}
+
+function getTraceStageDescriptors(
+    metadata: KernelMetadata | undefined,
+): TraceStageDescriptor[] {
+    const rawStageDescriptors = metadata?.stage_descriptors;
+    if (!Array.isArray(rawStageDescriptors)) {
+        return [];
+    }
+    return rawStageDescriptors.filter(
+        (stage): stage is TraceStageDescriptor =>
+            typeof stage === "object" && stage !== null && typeof (stage as TraceStageDescriptor).name === "string"
+    );
+}
+
+function buildKernelStageDescriptors(
+    metadata: KernelMetadata | undefined,
+    fileNames: string[],
+    fallbackFileNames: string[] = fileNames,
+): KernelStageDescriptor[] {
+    const serializedStages = getTraceStageDescriptors(metadata);
+    const fallbackFileNameSet = new Set(fallbackFileNames);
+    const descriptors = fileNames
+        .map(fileName => {
+            const traceStage = serializedStages.find(stage => stage.file_name === fileName);
+            if (traceStage) {
+                return normalizeTraceStageDescriptor(traceStage, fileName);
+            }
+            if (!fallbackFileNameSet.has(fileName)) {
+                return null;
+            }
+            return buildFallbackStageDescriptor(fileName);
+        })
+        .filter((stage): stage is KernelStageDescriptor => stage !== null)
+        .sort((left, right) => {
+            if (left.displayOrder !== right.displayOrder) {
+                return left.displayOrder - right.displayOrder;
+            }
+            return left.fileName.localeCompare(right.fileName);
+        });
+
+    return descriptors;
+}
+
+function getKernelFileNames(kernel: Pick<ProcessedKernel, "irFiles" | "filePaths">): string[] {
+    return Array.from(
+        new Set([
+            ...Object.keys(kernel.irFiles || {}),
+            ...Object.keys(kernel.filePaths || {}),
+        ])
+    );
+}
+
+export function getKernelStageDescriptors(kernel?: Pick<ProcessedKernel, "stages">): KernelStageDescriptor[] {
+    return kernel?.stages || [];
+}
+
+export function getDisplayableKernelStageDescriptors(
+    kernel?: Pick<ProcessedKernel, "stages">,
+): KernelStageDescriptor[] {
+    return getKernelStageDescriptors(kernel).filter(stage => stage.isText);
+}
+
+export function getStageDescriptorForFile(
+    kernel: Pick<ProcessedKernel, "stages"> | undefined,
+    fileName: string,
+): KernelStageDescriptor | undefined {
+    return getKernelStageDescriptors(kernel).find(stage => stage.fileName === fileName);
+}
+
+export function getStageDescriptorByName(
+    kernel: Pick<ProcessedKernel, "stages"> | undefined,
+    stageName: string,
+): KernelStageDescriptor | undefined {
+    return getKernelStageDescriptors(kernel).find(stage => stage.name === stageName);
+}
+
+export function getKernelStageNames(kernel?: Pick<ProcessedKernel, "stages">): string[] {
+    return getKernelStageDescriptors(kernel).map(stage => stage.name);
+}
+
+export function getDefaultKernelStagePair(
+    kernel?: Pick<ProcessedKernel, "stages">,
+): { left: string; right: string } {
+    const stages = getDisplayableKernelStageDescriptors(kernel);
+    if (stages.length === 0) {
+        return { left: "", right: "" };
+    }
+
+    const left = (stages.find(stage => stage.isPrimary) || stages[0]).fileName;
+    const right = (stages.find(stage => stage.fileName !== left) || stages[stages.length - 1]).fileName;
+    return { left, right };
+}
+
+export function getKernelContentByStageName(
+    kernel: Pick<ProcessedKernel, "irFiles" | "pythonSourceInfo" | "stages"> | undefined,
+    stageName: string,
+): string {
+    if (!kernel) {
+        return "";
+    }
+    if (stageName === "python") {
+        return kernel.pythonSourceInfo?.code || "";
+    }
+
+    const stage = getStageDescriptorByName(kernel, stageName);
+    if (!stage) {
+        return "";
+    }
+    return kernel.irFiles[stage.fileName] || "";
+}
+
+export function getStageDisplayName(
+    kernel: Pick<ProcessedKernel, "stages"> | undefined,
+    stageNameOrFileName: string,
+): string {
+    const stage = getStageDescriptorForFile(kernel, stageNameOrFileName)
+        || getStageDescriptorByName(kernel, stageNameOrFileName);
+    if (stage) {
+        return stage.displayName;
+    }
+
+    if (stageNameOrFileName.toLowerCase() === "python") {
+        return "Python";
+    }
+    return toDefaultDisplayName(getIRType(stageNameOrFileName));
+}
+
+export function getStageSyntaxId(
+    kernel: Pick<ProcessedKernel, "stages"> | undefined,
+    stageNameOrFileName: string,
+): string {
+    const stage = getStageDescriptorForFile(kernel, stageNameOrFileName)
+        || getStageDescriptorByName(kernel, stageNameOrFileName);
+    if (stage) {
+        return stage.syntaxId;
+    }
+
+    if (stageNameOrFileName.toLowerCase() === "python") {
+        return "python";
+    }
+    return "plaintext";
 }
 
 /**
@@ -347,6 +559,7 @@ export interface ProcessedKernel {
     stack: StackEntry[];
     irFiles: Record<string, string>; // IR file contents
     filePaths: Record<string, string>; // IR file paths
+    stages: KernelStageDescriptor[]; // Present stage descriptors derived from adapter metadata and artifacts
     sourceMappings?: Record<string, Record<string, SourceMapping>>; // Source mappings for each IR file
     pythonSourceInfo?: PythonSourceCodeInfo; // Python source code information
     metadata?: KernelMetadata; // Compilation metadata
@@ -596,6 +809,13 @@ export function processKernelData(logEntries: LogEntry[]): ProcessedKernel[] {
             }
 
             const sourceMappings = entry.payload.source_mappings || {};
+            const contentFileNames = Object.keys(entry.payload.file_content);
+            const fileNames = Array.from(
+                new Set([
+                    ...contentFileNames,
+                    ...Object.keys(entry.payload.file_path),
+                ])
+            );
 
             const newKernel: ProcessedKernel = {
                 name: kernelName,
@@ -606,6 +826,11 @@ export function processKernelData(logEntries: LogEntry[]): ProcessedKernel[] {
                 stack: entry.stack || [],
                 irFiles: entry.payload.file_content,
                 filePaths: entry.payload.file_path,
+                stages: buildKernelStageDescriptors(
+                    entry.payload.metadata,
+                    fileNames,
+                    contentFileNames,
+                ),
                 sourceMappings,
                 pythonSourceInfo: entry.payload.python_source,
                 metadata: entry.payload.metadata,
@@ -704,5 +929,14 @@ export function processKernelData(logEntries: LogEntry[]): ProcessedKernel[] {
     }
 
     const finalKernels = Array.from(kernelsByHash.values());
+    for (const kernel of finalKernels) {
+        if (kernel.stages.length === 0) {
+            kernel.stages = buildKernelStageDescriptors(
+                kernel.metadata,
+                getKernelFileNames(kernel),
+                Object.keys(kernel.irFiles || {}),
+            );
+        }
+    }
     return finalKernels;
 }

@@ -1,9 +1,11 @@
 #  Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import re
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from copy import deepcopy
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from tritonparse.backend import get_backend_registry
 from tritonparse.tp_logger import logger
 
 # Sentinel object to mark arguments that should be skipped during processing
@@ -31,6 +33,8 @@ class ContextBundle:
     tensor_args: Dict[str, Any]
     raw_launch_event: Dict[str, Any]
     raw_comp_event: Dict[str, Any]
+    backend_adapter: Dict[str, Any] = field(default_factory=dict)
+    synchronize_snippet: str = ""
     source_repo_dir: Optional[str] = None
 
 
@@ -152,7 +156,10 @@ def _decode_arg(raw: Any) -> Any:
     return raw.get("value", raw.get("repr"))
 
 
-def _pack_args(args: Dict[str, Any]) -> Dict[str, Any]:
+def _pack_args(
+    args: Dict[str, Any],
+    device_normalizer: Optional[Callable[[str], str]] = None,
+) -> Dict[str, Any]:
     """
     Pack argument values into a standardized format.
 
@@ -166,11 +173,14 @@ def _pack_args(args: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in args.items():
         t = v.get("type") if isinstance(v, dict) else None
         if t == "tensor":
+            device = v.get("device") if isinstance(v, dict) else None
+            if device_normalizer and isinstance(device, str):
+                device = device_normalizer(device)
             packed[k] = {
                 "type": "tensor",
                 "shape": v.get("shape") if isinstance(v, dict) else None,
                 "dtype": v.get("dtype") if isinstance(v, dict) else None,
-                "device": v.get("device") if isinstance(v, dict) else None,
+                "device": device,
                 "stride": v.get("stride") if isinstance(v, dict) else None,
                 "is_contiguous": (
                     v.get("is_contiguous") if isinstance(v, dict) else None
@@ -241,6 +251,19 @@ def _get_num_warps(
     return metadata_num_warps
 
 
+def _resolve_reproducer_adapter(
+    comp_event: Dict[str, Any],
+    launch_event: Dict[str, Any],
+):
+    compilation_metadata = (comp_event.get("payload", {}).get("metadata", {}))
+    launch_metadata = launch_event.get("compilation_metadata", {})
+    registry = get_backend_registry()
+    return registry.resolve_from_trace(
+        compilation_metadata=compilation_metadata,
+        launch_metadata=launch_metadata,
+    )
+
+
 def build_context_bundle(
     events: List[Dict[str, Any]], line_index: Optional[int] = None
 ):
@@ -259,6 +282,8 @@ def build_context_bundle(
         RuntimeError: If compilation event cannot be found.
     """
     launch_event, comp_event = get_launch_and_compilation_events(events, line_index)
+    launch_event = deepcopy(launch_event)
+    comp_event = deepcopy(comp_event)
     kernel_info = get_kernel_info(comp_event)
     grid = launch_event.get("grid")
     extracted_args = launch_event.get("extracted_args", {})
@@ -276,6 +301,7 @@ def build_context_bundle(
         )
 
     comp_meta = launch_event.get("compilation_metadata", {})
+    adapter = _resolve_reproducer_adapter(comp_event, launch_event)
     num_warps = _get_num_warps(launch_event, comp_event)
 
     # Compile metadata subset we care about.
@@ -297,6 +323,10 @@ def build_context_bundle(
         "backend": comp_meta.get("backend_name") or comp_meta.get("backend"),
         "triton_version": comp_meta.get("triton_version"),
         "hash": comp_meta.get("hash"),
+        "adapter_name": comp_meta.get("adapter_name")
+        or (comp_event.get("payload", {}).get("metadata", {}).get("adapter_name"))
+        or adapter.adapter_name,
+        "synchronize_snippet": adapter.build_synchronize_snippet(),
         # Scratch memory (kernels with global_scratch_size > 0 need set_allocator)
         "global_scratch_size": comp_meta.get("global_scratch_size"),
     }
@@ -316,8 +346,19 @@ def build_context_bundle(
         if isinstance(v, dict) and v.get("type") == "tensor"
     }
 
-    primitive_args = _pack_args(extracted_args)
-    tensor_args = _pack_args(raw_tensor_args)
+    for tensor_info in raw_tensor_args.values():
+        device = tensor_info.get("device")
+        if isinstance(device, str):
+            tensor_info["device"] = adapter.normalize_device_string(device)
+
+    for arg_info in extracted_args.values():
+        if isinstance(arg_info, dict) and arg_info.get("type") == "tensor":
+            device = arg_info.get("device")
+            if isinstance(device, str):
+                arg_info["device"] = adapter.normalize_device_string(device)
+
+    primitive_args = _pack_args(extracted_args, adapter.normalize_device_string)
+    tensor_args = _pack_args(raw_tensor_args, adapter.normalize_device_string)
     launch_block = {
         "grid": grid,
         "kwargs": kwargs,
@@ -331,4 +372,10 @@ def build_context_bundle(
         tensor_args,
         launch_event,
         comp_event,
+        {
+            "adapter_name": compile_block.get("adapter_name")
+            or adapter.adapter_name,
+            "device_prefix": adapter.device_prefix,
+        },
+        adapter.build_synchronize_snippet(),
     )
