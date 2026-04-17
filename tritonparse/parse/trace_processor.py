@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from tritonparse._json_compat import dumps, JSONDecodeError, loads
+from tritonparse.backend import get_backend_registry
 from tritonparse.tools.compression import open_compressed_file
 from tritonparse.tp_logger import get_logger
 
@@ -174,6 +175,67 @@ def get_procedure_checks() -> List[Dict[str, Any]]:
     return _DEFAULT_PROCEDURE_CHECKS
 
 
+def _resolve_source_mappable_stage_keys(
+    entry: Dict[str, Any],
+) -> Dict[str, str]:
+    payload = entry.get("payload", {})
+    metadata = payload.get("metadata", {})
+    file_content = payload.get("file_content", {})
+    file_path = payload.get("file_path", {})
+    available_artifacts = set(file_content.keys()) | set(file_path.keys())
+
+    serialized_stage_descriptors = metadata.get("stage_descriptors")
+    stage_keys: Dict[str, str] = {}
+    if isinstance(serialized_stage_descriptors, list):
+        for raw_stage in sorted(
+            [stage for stage in serialized_stage_descriptors if isinstance(stage, dict)],
+            key=lambda stage: int(stage.get("display_order", 0)),
+        ):
+            stage_name = raw_stage.get("name")
+            artifact_name = raw_stage.get("file_name")
+            supports_source_mapping = raw_stage.get("supports_source_mapping", True)
+            if not isinstance(stage_name, str) or not isinstance(artifact_name, str):
+                continue
+            if not supports_source_mapping:
+                continue
+            if artifact_name not in available_artifacts or stage_name in stage_keys:
+                continue
+            stage_keys[stage_name] = artifact_name
+        if stage_keys:
+            return stage_keys
+
+    if metadata.get("adapter_name") and metadata.get("pipeline_kind"):
+        try:
+            adapter = get_backend_registry().resolve_from_trace(metadata)
+        except ValueError:
+            adapter = None
+
+        if adapter is not None:
+            for artifact_name in sorted(available_artifacts):
+                stage = adapter.classify_artifact(artifact_name)
+                if not stage or not stage.supports_source_mapping:
+                    continue
+                if stage.name not in stage_keys:
+                    stage_keys[stage.name] = artifact_name
+            if stage_keys:
+                return stage_keys
+
+    fallback_extensions = {
+        "ttir": ".ttir",
+        "ttgir": ".ttgir",
+        "ptx": ".ptx",
+        "amdgcn": ".amdgcn",
+        "sass": ".sass",
+    }
+    for stage_name, extension in fallback_extensions.items():
+        artifact_name = next((name for name in file_content if name.endswith(extension)), None)
+        if artifact_name is None:
+            artifact_name = next((name for name in file_path if name.endswith(extension)), None)
+        if artifact_name is not None:
+            stage_keys[stage_name] = artifact_name
+    return stage_keys
+
+
 def generate_source_mappings(
     ir_content: str, ir_type: str, other_mappings: List[Any] | None = None
 ) -> Dict[str, Dict[str, Any]]:
@@ -270,13 +332,15 @@ def generate_source_mappings(
 
 
 def process_ir(
-    key: str,
+    key: str | None,
     file_content: Dict[str, str],
     file_path: Dict[str, str],
     other_mappings: List[Any] | None = None,
 ):
+    if key is None:
+        return {}
     ir_content = load_ir_contents(key, file_content, file_path)
-    if not ir_content:
+    if not isinstance(ir_content, str) or not ir_content:
         return {}
     mapping = generate_source_mappings(ir_content, key.split(".")[1], other_mappings)
     logger.debug(f"Generated source mapping for {key}")
@@ -370,6 +434,8 @@ def _create_fake_compilation(
                 "num_ctas": compilation_metadata.get("num_ctas"),
                 "maxnreg": compilation_metadata.get("maxnreg"),
                 "cluster_dims": compilation_metadata.get("cluster_dims"),
+                "adapter_name": compilation_metadata.get("adapter_name"),
+                "pipeline_kind": compilation_metadata.get("pipeline_kind"),
             },
             # Empty IR content (cannot be recovered)
             "file_content": {},
@@ -401,27 +467,12 @@ def parse_single_trace_content(trace_content: str) -> str:
         file_content = payload.get("file_content", {})
         file_path = payload.get("file_path", {})
 
-        # Find the IR file keys
-        ttir_key = next((k for k in file_content if k.endswith(".ttir")), None)
-        ttgir_key = next((k for k in file_content if k.endswith(".ttgir")), None)
-        ptx_key = next((k for k in file_content if k.endswith(".ptx")), None)
-        amdgcn_key = next((k for k in file_content if k.endswith(".amdgcn")), None)
-        sass_key = next((k for k in file_content if k.endswith(".sass")), None)
-
-        # Extract original num_warps from TTGIR for warp-specialized kernels.
-        # If upstream Triton already set num_warps_base, trust it; otherwise
-        # recover the value from the TTGIR "ttg.num-warps" module attribute.
-        metadata = payload.setdefault("metadata", {})
-        if "num_warps_base" not in metadata and ttgir_key and ttgir_key in file_content:
-            ttgir_content = file_content[ttgir_key]
-            if isinstance(ttgir_content, str):
-                match = re.search(r'"ttg\.num-warps"\s*=\s*(\d+)', ttgir_content)
-                if match:
-                    original = int(match.group(1))
-                    current = metadata.get("num_warps")
-                    if current is not None and original != current:
-                        metadata["num_warps_base"] = original
-
+        stage_keys = _resolve_source_mappable_stage_keys(entry)
+        ttir_key = stage_keys.get("ttir")
+        ttgir_key = stage_keys.get("ttgir")
+        ptx_key = stage_keys.get("ptx")
+        amdgcn_key = stage_keys.get("amdgcn")
+        sass_key = stage_keys.get("sass")
         # Skip if no IR files found
         if not (ttir_key or ttgir_key or ptx_key or amdgcn_key or sass_key):
             logger.warning("No IR files found in the payload.")
