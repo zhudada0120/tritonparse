@@ -77,7 +77,7 @@ class CompilationPipelineAdapter(ABC):
 class NvidiaTritonAdapter(CompilationPipelineAdapter):
     @property
     def adapter_name(self) -> str:
-        return "nvidia_triton"
+        return "cuda_triton"
 
     @property
     def runtime_backend(self) -> str:
@@ -101,6 +101,8 @@ class NvidiaTritonAdapter(CompilationPipelineAdapter):
                              False, False, "none", "plaintext"),
             IRStageDescriptor("sass", ".sass", "SASS", 60,
                              True, True, "sass_loc", "asm"),
+            IRStageDescriptor("json", ".json", "JSON", 100,
+                             True, False, "none", "json"),
         ]
 
 
@@ -108,7 +110,7 @@ class NvidiaTritonAdapter(CompilationPipelineAdapter):
 class AmdTritonAdapter(CompilationPipelineAdapter):
     @property
     def adapter_name(self) -> str:
-        return "amd_triton"
+        return "hip_triton"
 
     @property
     def runtime_backend(self) -> str:
@@ -128,6 +130,8 @@ class AmdTritonAdapter(CompilationPipelineAdapter):
                              True, True, "generic_loc", "llvm"),
             IRStageDescriptor("amdgcn", ".amdgcn", "AMDGCN", 40,
                              True, True, "amdgcn_loc", "asm"),
+            IRStageDescriptor("json", ".json", "JSON", 100,
+                             True, False, "none", "json"),
         ]
 
 
@@ -159,13 +163,18 @@ class PipelineAdapterRegistry:
         self,
         metadata: dict[str, Any],
     ) -> CompilationPipelineAdapter:
-        adapter_name = metadata.get("adapter_name")
-        if not isinstance(adapter_name, str):
-            raise ValueError(
-                "Unable to resolve adapter from trace metadata: "
-                f"adapter_name={adapter_name!r}"
-            )
-        return self.resolve(adapter_name=adapter_name)
+        # 从backend_name推断adapter_name（拼接_triton后缀）
+        backend_name = metadata.get("backend_name")
+        if isinstance(backend_name, str):
+            # 拼接规则：cuda → cuda_triton, hip → hip_triton
+            inferred_adapter_name = f"{backend_name}_triton"
+            return self.resolve(adapter_name=inferred_adapter_name)
+
+        # 如果没有backend_name，抛出错误
+        raise ValueError(
+            "Unable to resolve adapter from trace metadata: "
+            f"backend_name={backend_name!r}"
+        )
 
 
 def _deserialize_stage_descriptor(raw_stage: dict[str, Any]) -> IRStageDescriptor:

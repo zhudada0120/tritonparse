@@ -25,6 +25,7 @@ from torch.utils._traceback import CapturedTraceback
 from triton.knobs import JITHook, LaunchHook
 from tritonparse._json_compat import dumps, loads
 
+from .backend import get_backend_registry
 from .shared_vars import DEFAULT_TRACE_FILE_PREFIX, is_fbcode
 
 
@@ -872,20 +873,40 @@ def extract_python_source_info(trace_data: Dict[str, Any], source):
     }
 
 
-def extract_file_content(trace_data: Dict[str, Any], metadata_group: Dict[str, str]):
+def extract_file_content(
+    trace_data: Dict[str, Any],
+    metadata_group: Dict[str, str],
+    adapter=None,
+):
     """
     Extract file content from metadata_group and add it to trace_data.
 
     Args:
         trace_data (Dict): Dictionary to store extracted information
         metadata_group (Dict): Dictionary mapping filenames to file paths
+        adapter: Backend adapter (optional). If provided, uses adapter to classify
+                 artifacts. If None, falls back to TEXT_FILE_EXTENSIONS.
     """
     for ir_filename, file_path in metadata_group.items():
         # Add file path to trace data
         trace_data["file_path"][ir_filename] = file_path
 
         # Check if this is a text file we can read
-        if any(ir_filename.endswith(ext) for ext in TEXT_FILE_EXTENSIONS):
+        should_read = False
+        if adapter is not None:
+            # New logic: use adapter to classify artifact
+            stage = adapter.classify_artifact(ir_filename)
+            if stage and stage.is_text:
+                should_read = True
+            # Skip binary artifacts
+            elif stage and not stage.is_text:
+                continue
+        else:
+            # Old logic: fallback to TEXT_FILE_EXTENSIONS
+            if any(ir_filename.endswith(ext) for ext in TEXT_FILE_EXTENSIONS):
+                should_read = True
+
+        if should_read:
             try:
                 # Check file size before reading to avoid memory issues
                 file_size = os.path.getsize(file_path)
@@ -1333,8 +1354,38 @@ def maybe_trace_triton(
                 trace_data["pt_info"][attr_name] = attr_value
     if trace_id:
         trace_data["pt_info"]["attempt"] = trace_id.attempt
+
+    # Try to resolve backend adapter (with fallback)
+    adapter = None
+    try:
+        registry = get_backend_registry()
+        adapter = registry.resolve_from_trace(trace_data["metadata"])
+
+        # Add backend metadata to trace
+        trace_data["metadata"]["adapter_name"] = adapter.adapter_name
+        trace_data["metadata"]["runtime_backend"] = adapter.runtime_backend
+
+        # Build stage descriptors
+        stage_descriptors = []
+        for stage in adapter.get_ir_stages():
+            stage_descriptors.append({
+                "name": stage.name,
+                "extension": stage.extension,
+                "display_name": stage.display_name,
+                "display_order": stage.display_order,
+                "is_text": stage.is_text,
+                "supports_source_mapping": stage.supports_source_mapping,
+                "parser_id": stage.parser_id,
+                "syntax_id": stage.syntax_id,
+            })
+        trace_data["metadata"]["stage_descriptors"] = stage_descriptors
+    except (ValueError, KeyError):
+        # Fallback: no adapter_name in metadata, use old logic
+        log.debug("No adapter_name in trace metadata, falling back to legacy behavior")
+        pass
+
     # Extract content from all IR and other files in the metadata group
-    extract_file_content(trace_data, metadata_group)
+    extract_file_content(trace_data, metadata_group, adapter)
     # Extract Python source code information if available
     extract_python_source_info(trace_data, src)
     extract_metadata_from_src(trace_data, src)
