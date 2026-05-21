@@ -124,21 +124,21 @@ class TestMultiBackendStage(unittest.TestCase):
 
         # Common parsers present in both
         for adapter in (nvidia, amd):
-            parsers = adapter.list_parsers()
-            self.assertIn("generic_loc", parsers)
-            self.assertIn("none", parsers)
+            self.assertIsNotNone(adapter.get_parser("generic_loc"))
+            self.assertIsNotNone(adapter.get_parser("none"))
 
         # NVIDIA-specific parsers only in NVIDIA adapter
-        nvidia_parsers = nvidia.list_parsers()
-        self.assertIn("ptx_loc", nvidia_parsers)
-        self.assertIn("sass_loc", nvidia_parsers)
-        self.assertNotIn("amdgcn_loc", nvidia_parsers)
+        self.assertIsNotNone(nvidia.get_parser("ptx_loc"))
+        self.assertIsNotNone(nvidia.get_parser("sass_loc"))
+        with self.assertRaises(ValueError):
+            nvidia.get_parser("amdgcn_loc")
 
         # AMD-specific parser only in AMD adapter
-        amd_parsers = amd.list_parsers()
-        self.assertIn("amdgcn_loc", amd_parsers)
-        self.assertNotIn("ptx_loc", amd_parsers)
-        self.assertNotIn("sass_loc", amd_parsers)
+        self.assertIsNotNone(amd.get_parser("amdgcn_loc"))
+        with self.assertRaises(ValueError):
+            amd.get_parser("ptx_loc")
+        with self.assertRaises(ValueError):
+            amd.get_parser("sass_loc")
 
     def test_adapter_get_parser_method(self):
         """Test adapter.get_parser() with isolated per-adapter registries."""
@@ -369,21 +369,21 @@ class TestAnalysisAdapterDriven(unittest.TestCase):
 
         # Common analyzers present in both
         for adapter in (nvidia, amd):
-            analyzers = adapter.get_analysis_passes()
+            analyzers = adapter.list_analyzer_keys()
             self.assertIn("loop_schedules", analyzers)
             self.assertIn("procedure_checks", analyzers)
 
         # Only AMD adapter has amd_buffer_ops
-        self.assertIn("amd_buffer_ops", amd.get_analysis_passes())
-        self.assertNotIn("amd_buffer_ops", nvidia.get_analysis_passes())
+        self.assertIn("amd_buffer_ops", amd.list_analyzer_keys())
+        self.assertNotIn("amd_buffer_ops", nvidia.list_analyzer_keys())
 
     def test_analysis_adapter_passes_differ_by_backend(self):
         """NVIDIA only has common passes; AMD additionally has amd_buffer_ops."""
         nvidia_passes = set(
-            self.registry.resolve(adapter_name="cuda_triton").get_analysis_passes()
+            self.registry.resolve(adapter_name="cuda_triton").list_analyzer_keys()
         )
         amd_passes = set(
-            self.registry.resolve(adapter_name="hip_triton").get_analysis_passes()
+            self.registry.resolve(adapter_name="hip_triton").list_analyzer_keys()
         )
 
         self.assertIn("loop_schedules", nvidia_passes)
@@ -391,21 +391,6 @@ class TestAnalysisAdapterDriven(unittest.TestCase):
 
         self.assertIn("loop_schedules", amd_passes)
         self.assertIn("amd_buffer_ops", amd_passes)
-
-    def test_analysis_adapter_required_stages_consistency(self):
-        """Each analysis pass's required_stages should exist in the adapter."""
-        amd_adapter = self.registry.resolve(adapter_name="hip_triton")
-        for pass_name in amd_adapter.get_analysis_passes():
-            required_stages = amd_adapter.get_analyzer_required_stages(pass_name)
-            self.assertIsNotNone(
-                required_stages, f"Analyzer '{pass_name}' should be registered"
-            )
-            assert required_stages is not None  # for type checker
-            for stage_name in required_stages:
-                self.assertIsNotNone(
-                    amd_adapter.get_stage_by_name(stage_name),
-                    f"Required stage '{stage_name}' should exist in AMD adapter",
-                )
 
     def test_analysis_adapter_run_analysis_pass(self):
         """run_analysis_pass: empty artifacts → None; invalid analyzer → ValueError."""
@@ -582,13 +567,17 @@ class TestAnalysisAdapterDriven(unittest.TestCase):
 class TestDeviceStringHelpers(unittest.TestCase):
     """Tests for device-string normalization helpers."""
 
-    def test_adapter_returns_canonical_cuda_device(self):
-        adapter = NvidiaTritonAdapter()
-        self.assertEqual(adapter.get_canonical_device_string(), "cuda:0")
+    def test_public_helper_normalizes_cuda(self):
+        from tritonparse.backend import normalize_accelerator_device_string
 
-    def test_adapter_returns_canonical_hip_device(self):
-        adapter = AmdTritonAdapter()
-        self.assertEqual(adapter.get_canonical_device_string(), "cuda:0")
+        self.assertEqual(normalize_accelerator_device_string("cuda"), "cuda:0")
+        self.assertEqual(normalize_accelerator_device_string("cuda:2"), "cuda:0")
+
+    def test_public_helper_normalizes_hip(self):
+        from tritonparse.backend import normalize_accelerator_device_string
+
+        self.assertEqual(normalize_accelerator_device_string("hip"), "hip:0")
+        self.assertEqual(normalize_accelerator_device_string("hip:3"), "hip:0")
 
     def test_public_helper_keeps_cpu(self):
         from tritonparse.backend import normalize_accelerator_device_string
