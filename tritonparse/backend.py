@@ -51,15 +51,15 @@ class DerivedArtifactInfo:
     """Describes an artifact derived by running tools on another stage's output.
 
     Attributes:
-        source_stage_name: Name of the source stage (e.g., "cubin").
         target_stage_name: Name of the target stage (e.g., "sass").
+        source_stage_name: Name of the source stage (e.g., "cubin").
         tool_name: Name of the tool used to generate the artifact (e.g., "nvdisasm").
         derive_func: Callable that takes a source file path and returns derived content,
             or None if the tool is unavailable or derivation fails.
     """
 
-    source_stage_name: str
     target_stage_name: str
+    source_stage_name: str
     tool_name: str
     derive_func: Callable[[str], str | None]
 
@@ -97,8 +97,11 @@ class DerivedArtifactRegistry:
     ) -> DerivedArtifactInfo | None:
         return self._registry.get(target_stage_name)
 
-    def list_derived_artifacts(self) -> list[str]:
+    def list_derived_artifact_keys(self) -> list[str]:
         return list(self._registry.keys())
+
+    def list_derived_artifact_infos(self) -> list[DerivedArtifactInfo]:
+        return list(self._registry.values())
 
 
 class ParserRegistry:
@@ -178,6 +181,9 @@ class AnalysisRegistry:
 
     def list_analyzers(self) -> list[str]:
         return list(self._analyzer_infos.keys())
+
+    def list_analyzer_infos(self) -> list[AnalyzerInfo]:
+        return list(self._analyzer_infos.values())
 
 
 # =============================================================================
@@ -325,7 +331,10 @@ class CompilationPipelineAdapter(ABC):
             else None
         )
         if enabled_normalized is not None:
-            known = {name.lower() for name in self._analysis_registry.list_analyzers()}
+            known = {
+                info.name.lower()
+                for info in self._analysis_registry.list_analyzer_infos()
+            }
             unknown = enabled_normalized - known
             if unknown:
                 logger.warning(
@@ -333,21 +342,17 @@ class CompilationPipelineAdapter(ABC):
                     f"Available for {self.adapter_name}: {sorted(known)}"
                 )
 
-        declared_analyzers = self.list_analyzer_keys()
         executable = []
 
-        for analyzer_name in declared_analyzers:
+        for info in self._analysis_registry.list_analyzer_infos():
             # Check 1: Is it enabled by user?
             if (
                 enabled_normalized is not None
-                and analyzer_name.lower() not in enabled_normalized
+                and info.name.lower() not in enabled_normalized
             ):
                 continue
 
             # Check 2: Are required stages available?
-            info = self._analysis_registry.get_analyzer_info(analyzer_name)
-            if not info:
-                continue
 
             stages_available = True
             for stage_name in info.required_stages:
@@ -362,7 +367,7 @@ class CompilationPipelineAdapter(ABC):
                     break
 
             if stages_available:
-                executable.append(analyzer_name)
+                executable.append(info.name)
 
         return executable
 
@@ -425,12 +430,7 @@ class CompilationPipelineAdapter(ABC):
         Returns:
             List of applicable DerivedArtifactInfo
         """
-        all_artifacts = [
-            info
-            for k in self._derived_artifact_registry.list_derived_artifacts()
-            if (info := self._derived_artifact_registry.get_derived_artifact_info(k))
-            is not None
-        ]
+        all_artifacts = self._derived_artifact_registry.list_derived_artifact_infos()
 
         if enabled_derived_artifacts is not None:
             enabled_normalized = {n.lower() for n in enabled_derived_artifacts}
@@ -451,8 +451,8 @@ class CompilationPipelineAdapter(ABC):
 
     def register_backend_derived_artifact(
         self,
-        source_stage_name: str,
         target_stage_name: str,
+        source_stage_name: str,
         tool_name: str,
         derive_func: Callable[[str], str | None],
     ) -> None:
@@ -461,7 +461,7 @@ class CompilationPipelineAdapter(ABC):
         )
 
     def list_derived_artifact_keys(self) -> list[str]:
-        return self._derived_artifact_registry.list_derived_artifacts()
+        return self._derived_artifact_registry.list_derived_artifact_keys()
 
 
 class NvidiaTritonAdapter(CompilationPipelineAdapter):
@@ -484,8 +484,8 @@ class NvidiaTritonAdapter(CompilationPipelineAdapter):
         from tritonparse.tools.disasm import extract as derive_sass
 
         self.register_backend_derived_artifact(
-            source_stage_name="cubin",
             target_stage_name="sass",
+            source_stage_name="cubin",
             tool_name="nvdisasm",
             derive_func=derive_sass,
         )
