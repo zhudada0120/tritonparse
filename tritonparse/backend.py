@@ -280,22 +280,24 @@ class CompilationPipelineAdapter(ABC):
         self,
         analyzer_id: str,
         entry: dict,
-        procedure_checks: list | None = None,
-    ) -> dict[str, Any]:
+        ctx: AnalyzerContext | None = None,
+    ) -> dict[str, Any] | None:
         """
         Execute the specified analysis pass.
 
         Args:
             analyzer_id: Analysis name (e.g., "amd_buffer_ops", "loop_schedules")
             entry: Trace entry (contains payload)
-            procedure_checks: Procedure checks configuration
+            ctx: Per-call analyzer context; defaults to empty AnalyzerContext()
 
         Returns:
-            Analysis result dictionary
+            Analysis result dictionary, or None if analysis cannot be performed
 
         Raises:
             ValueError: If the analyzer_id is not found in the registry
         """
+        if ctx is None:
+            ctx = AnalyzerContext()
         info = self._analysis_registry.get_analyzer_info(analyzer_id)
         if info is None:
             available = self._analysis_registry.list_analyzers()
@@ -303,7 +305,7 @@ class CompilationPipelineAdapter(ABC):
                 f"Analyzer '{analyzer_id}' not found. Available analyzers: {available}"
             )
 
-        return info.func(entry, procedure_checks)
+        return info.func(entry, ctx)
 
     def list_executable_analyzers(
         self,
@@ -370,37 +372,6 @@ class CompilationPipelineAdapter(ABC):
                 executable.append(info.name)
 
         return executable
-
-    def run_analysis_pass(
-        self,
-        analyzer_id: str,
-        entry: dict,
-        ctx: AnalyzerContext | None = None,
-    ) -> dict[str, Any] | None:
-        """
-        Execute the specified analysis pass.
-
-        Args:
-            analyzer_id: Analysis name (e.g., "amd_buffer_ops", "loop_schedules")
-            entry: Trace entry (contains payload)
-            ctx: Per-call analyzer context; defaults to empty AnalyzerContext()
-
-        Returns:
-            Analysis result dictionary, or None if analysis cannot be performed
-
-        Raises:
-            ValueError: If the analyzer_id is not found in the registry
-        """
-        if ctx is None:
-            ctx = AnalyzerContext()
-        info = self._analysis_registry.get_analyzer_info(analyzer_id)
-        if info is None:
-            available = self._analysis_registry.list_analyzers()
-            raise ValueError(
-                f"Analyzer '{analyzer_id}' not found. Available analyzers: {available}"
-            )
-
-        return info.func(entry, ctx)
 
     def register_backend_analyzer(
         self,
